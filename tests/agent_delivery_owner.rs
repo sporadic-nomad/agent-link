@@ -19,14 +19,18 @@ use agent_link::agent::{
     Timing, TrustPolicy,
 };
 use agent_link::screen::ScreenSnapshot;
-use agent_link::{Event, ForegroundOwner};
-use common::agent::{start_agent_shell, states_until};
+use agent_link::shell::ShellSpec;
+use agent_link::{Event, ForegroundOwner, SpawnMode};
+use common::agent::{start_agent_shell, start_agent_shell_spec, states_until};
 use common::delivery::{
     assert_launched_on_a_clear_line, assert_nothing_ran, collect_output, fake, long_window,
     outcome, outcome_where, outcome_with_output, outcome_with_states, shell, short_window, submit,
 };
 use common::fake::{READY_MARKER, fake_profile, launch_line, unlaunchable_profile};
-use common::{LAUNCH_WAIT, WAIT, bottom_rows, logger, screen_contains, wait_screen, wait_until};
+use common::{
+    LAUNCH_WAIT, SHELL_START_WAIT, WAIT, bottom_rows, logger, screen_contains, sh_spec,
+    wait_screen, wait_until,
+};
 use crossbeam_channel::Receiver;
 
 use DeliveryOutcome::{Aborted, Delivered};
@@ -204,7 +208,7 @@ fn hostile_sends() -> [(&'static str, SendOptions); 2] {
 /// Starts a nested shell by hand (a host line) and waits until it owns the terminal.
 fn start_nested_shell(term: &AgentTerminal) {
     term.terminal().write(b"sh\n").unwrap();
-    wait_until("the nested shell in front", || {
+    wait_screen(term.terminal(), SHELL_START_WAIT, |_| {
         term.terminal().foreground().owner == ForegroundOwner::Agent
     });
 }
@@ -268,19 +272,38 @@ fn a_nested_shell_started_after_the_agent_exited_gets_nothing() {
 /// shell the user starts then gets nothing: a leftover frame never shows the agent.
 #[test]
 fn a_leftover_frame_does_not_make_a_nested_shell_the_agent() {
-    let (term, events, _home) = shell(AgentSpec {
-        timing: Timing {
-            // A second of quiet after the shell's redraw: by then the shell has the
-            // terminal back (until it takes it, the dead job's group reads as the agent).
-            paste_echo_quiet: Duration::from_millis(1000),
-            paste_echo_max: Duration::from_millis(5000),
-            ..long_window()
-        },
-        ..AgentSpec::new(fake_profile(
-            "composer",
-            &["--exit-on-input", "--keep-frame"],
-        ))
+    let home = tempfile::tempdir().unwrap();
+    let mut spec = sh_spec(home.path());
+    // This fixture needs a trap acknowledgement before the host types its next line.
+    // Dash can defer a caught INT while reading input; Bash runs the trap and redraws.
+    // Other ownership tests keep the platform's /bin/sh.
+    spec.mode = SpawnMode::Shell(ShellSpec {
+        program: Some("/bin/bash".into()),
+        login: false,
     });
+    let (term, events) = start_agent_shell_spec(
+        spec,
+        AgentSpec {
+            timing: Timing {
+                // A second of quiet after the shell's redraw: by then the shell has the
+                // terminal back (until it takes it, the dead job's group reads as the agent).
+                paste_echo_quiet: Duration::from_millis(1000),
+                paste_echo_max: Duration::from_millis(5000),
+                ..long_window()
+            },
+            ..AgentSpec::new(fake_profile(
+                "composer",
+                &["--exit-on-input", "--keep-frame"],
+            ))
+        },
+    );
+    // A positive acknowledgement from the shell: foreground ownership and a completed
+    // delivery alone do not mean its queued Ctrl-C has finished flushing input.
+    let interrupt_trap = "trap 'printf \"\\ninterrupt-%s\\n\" handled' INT";
+    term.terminal()
+        .write(format!("{interrupt_trap}\n").as_bytes())
+        .unwrap();
+    wait_rows_end(&term, &[&format!("$ {interrupt_trap}"), "$"]);
     term.launch().unwrap();
     states_until(&term, &events, LAUNCH_WAIT, |s, _| s == AgentState::Ready);
     let ticket = term.send("left unread", submit());
@@ -292,7 +315,14 @@ fn a_leftover_frame_does_not_make_a_nested_shell_the_agent() {
     wait_until("the shell in front", || {
         term.terminal().foreground().owner == ForegroundOwner::Shell
     });
-    screen_contains(term.terminal(), READY_MARKER, WAIT);
+    // ShellOnly queues the interrupt; it does not wait for the shell to handle it.
+    // Wait for this interrupt's acknowledgement and prompt before typing a host line.
+    let screen = wait_rows_end(&term, &["interrupt-handled", "$"]);
+    assert!(
+        screen.text().contains(READY_MARKER),
+        "{}",
+        bottom_rows(&screen)
+    );
     start_nested_shell(&term);
     assert_nested_shell_gets_nothing(&term, &events);
 }
@@ -419,7 +449,21 @@ fn a_program_started_while_a_launch_line_is_held_gets_nothing() {
             ForegroundOwner::Agent,
             "cat still runs"
         );
-        let screen = wait_rows_end(&term, &["$ cat"]);
+        // With SIGINT ignored, Linux's tty can echo the interrupt as ^C without a
+        // shell redraw. Both forms still require an otherwise exact, untouched line.
+        let screen = wait_screen(term.terminal(), WAIT, |screen| {
+            screen
+                .rows
+                .iter()
+                .rfind(|row| !row.trim().is_empty())
+                .is_some_and(|row| matches!(row.trim_end(), "$ cat" | "$ ^Ccat"))
+        });
+        let cat_line = screen
+            .rows
+            .iter()
+            .rfind(|row| !row.trim().is_empty())
+            .unwrap()
+            .trim_end();
         assert!(
             !screen.text().contains("\nfalse"),
             "{}",
@@ -430,7 +474,7 @@ fn a_program_started_while_a_launch_line_is_held_gets_nothing() {
         wait_until("the shell in front", || {
             term.terminal().foreground().owner == ForegroundOwner::Shell
         });
-        wait_rows_end(&term, &["$ cat", "$"]);
+        wait_rows_end(&term, &[cat_line, "$"]);
     }
     let lines = logger::lines_for(id);
     let dropped = lines
