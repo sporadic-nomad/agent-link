@@ -30,8 +30,8 @@ use agent_link::{Event, ForegroundOwner, SpawnMode};
 use common::agent::{start_agent_shell_spec, states_until};
 use common::delivery::{
     DELIVERY_WAIT, assert_launched_on_a_clear_line, assert_nothing_ran, collect_output, fake,
-    long_window, outcome, outcome_where, outcome_with_output, outcome_with_states, shell,
-    short_window, submit,
+    install_status_prompt, long_window, outcome, outcome_where, outcome_with_output,
+    outcome_with_states, shell, short_window, submit, wait_for_interrupted_prompt,
 };
 use common::fake::{READY_MARKER, fake_profile, unlaunchable_profile};
 use common::{
@@ -997,9 +997,10 @@ fn a_paste_the_shell_took_never_runs_with_a_launch_line() {
                     ..long_window()
                 },
                 trace: Some(true),
-                ..AgentSpec::new(fake_profile("composer", &["--exit-on-input"]))
+                ..AgentSpec::new(fake_profile("composer", &["--exit-on-input", "--title"]))
             },
         );
+        install_status_prompt(&term);
         term.launch().unwrap();
         states_until(&term, &events, LAUNCH_WAIT, |s, _| s == AgentState::Ready);
         let shell_in_front = || {
@@ -1024,6 +1025,9 @@ fn a_paste_the_shell_took_never_runs_with_a_launch_line() {
             "{name}"
         );
         shell_in_front();
+        if multi {
+            wait_for_interrupted_prompt(&term);
+        }
         for buffer in [None, Some(31)] {
             if let Some(n) = buffer {
                 leave_on_the_line(&term, multi, n);
@@ -1035,6 +1039,7 @@ fn a_paste_the_shell_took_never_runs_with_a_launch_line() {
                 "{name}"
             );
             shell_in_front();
+            wait_for_interrupted_prompt(&term);
         }
         leave_on_the_line(&term, multi, 51);
         term.launch().unwrap();

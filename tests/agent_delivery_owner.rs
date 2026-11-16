@@ -19,17 +19,17 @@ use agent_link::agent::{
     Timing, TrustPolicy,
 };
 use agent_link::screen::ScreenSnapshot;
-use agent_link::shell::ShellSpec;
-use agent_link::{Event, ForegroundOwner, SpawnMode};
-use common::agent::{start_agent_shell, start_agent_shell_spec, states_until};
+use agent_link::{Event, ForegroundOwner};
+use common::agent::{start_agent_shell, states_until};
 use common::delivery::{
-    assert_launched_on_a_clear_line, assert_nothing_ran, collect_output, fake, long_window,
-    outcome, outcome_where, outcome_with_output, outcome_with_states, shell, short_window, submit,
+    assert_launched_on_a_clear_line, assert_nothing_ran, collect_output, fake,
+    install_status_prompt, long_window, outcome, outcome_where, outcome_with_output,
+    outcome_with_states, shell, short_window, submit, wait_for_interrupted_prompt,
 };
 use common::fake::{READY_MARKER, fake_profile, launch_line, unlaunchable_profile};
 use common::{
-    LAUNCH_WAIT, SHELL_START_WAIT, WAIT, bottom_rows, logger, screen_contains, sh_spec,
-    wait_screen, wait_until,
+    LAUNCH_WAIT, SHELL_START_WAIT, WAIT, bottom_rows, logger, screen_contains, wait_screen,
+    wait_until,
 };
 use crossbeam_channel::Receiver;
 
@@ -272,38 +272,20 @@ fn a_nested_shell_started_after_the_agent_exited_gets_nothing() {
 /// shell the user starts then gets nothing: a leftover frame never shows the agent.
 #[test]
 fn a_leftover_frame_does_not_make_a_nested_shell_the_agent() {
-    let home = tempfile::tempdir().unwrap();
-    let mut spec = sh_spec(home.path());
-    // This fixture needs a trap acknowledgement before the host types its next line.
-    // Dash can defer a caught INT while reading input; Bash runs the trap and redraws.
-    // Other ownership tests keep the platform's /bin/sh.
-    spec.mode = SpawnMode::Shell(ShellSpec {
-        program: Some("/bin/bash".into()),
-        login: false,
-    });
-    let (term, events) = start_agent_shell_spec(
-        spec,
-        AgentSpec {
-            timing: Timing {
-                // A second of quiet after the shell's redraw: by then the shell has the
-                // terminal back (until it takes it, the dead job's group reads as the agent).
-                paste_echo_quiet: Duration::from_millis(1000),
-                paste_echo_max: Duration::from_millis(5000),
-                ..long_window()
-            },
-            ..AgentSpec::new(fake_profile(
-                "composer",
-                &["--exit-on-input", "--keep-frame"],
-            ))
+    let (term, events, _home) = shell(AgentSpec {
+        timing: Timing {
+            // A second of quiet after the shell's redraw: by then the shell has the
+            // terminal back (until it takes it, the dead job's group reads as the agent).
+            paste_echo_quiet: Duration::from_millis(1000),
+            paste_echo_max: Duration::from_millis(5000),
+            ..long_window()
         },
-    );
-    // A positive acknowledgement from the shell: foreground ownership and a completed
-    // delivery alone do not mean its queued Ctrl-C has finished flushing input.
-    let interrupt_trap = "trap 'printf \"\\ninterrupt-%s\\n\" handled' INT";
-    term.terminal()
-        .write(format!("{interrupt_trap}\n").as_bytes())
-        .unwrap();
-    wait_rows_end(&term, &[&format!("$ {interrupt_trap}"), "$"]);
+        ..AgentSpec::new(fake_profile(
+            "composer",
+            &["--exit-on-input", "--keep-frame", "--title"],
+        ))
+    });
+    install_status_prompt(&term);
     term.launch().unwrap();
     states_until(&term, &events, LAUNCH_WAIT, |s, _| s == AgentState::Ready);
     let ticket = term.send("left unread", submit());
@@ -317,7 +299,7 @@ fn a_leftover_frame_does_not_make_a_nested_shell_the_agent() {
     });
     // ShellOnly queues the interrupt; it does not wait for the shell to handle it.
     // Wait for this interrupt's acknowledgement and prompt before typing a host line.
-    let screen = wait_rows_end(&term, &["interrupt-handled", "$"]);
+    let screen = wait_for_interrupted_prompt(&term);
     assert!(
         screen.text().contains(READY_MARKER),
         "{}",

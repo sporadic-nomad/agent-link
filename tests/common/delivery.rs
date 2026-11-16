@@ -15,7 +15,7 @@ use tempfile::TempDir;
 
 use super::agent::start_agent_shell;
 use super::fake::fake_profile;
-use super::{LAUNCH_WAIT, WAIT, bottom_rows};
+use super::{LAUNCH_WAIT, WAIT, bottom_rows, wait_screen};
 
 /// A delivery that starts the fake first: its first exec can take seconds here.
 pub const DELIVERY_WAIT: Duration = Duration::from_secs(60);
@@ -35,6 +35,39 @@ pub fn short_window() -> Timing {
         trust_watch: Duration::from_millis(1500),
         ..Timing::default()
     }
+}
+
+/// Append the previous command's status as an OSC title at the end of each shell prompt.
+/// The visible prompt stays `$ `; Bash/zsh get their own nonprinting delimiters so their
+/// line editors still measure its width correctly. Signal handling remains untouched.
+/// Use the fake's `--title` option to replace old prompt evidence on every agent start.
+pub fn install_status_prompt(term: &AgentTerminal) {
+    let setup = concat!(
+        r#"if [ -n "${BASH_VERSION-}" ]; then "#,
+        r#"PS1='$ \[$(printf "\033]0;agent-link-shell-status:%s\007" "$?")\]'; "#,
+        r#"elif [ -n "${ZSH_VERSION-}" ]; then setopt prompt_subst; "#,
+        r#"PS1='$ %{$(printf "\033]0;agent-link-shell-status:%s\007" "$?")%}'; "#,
+        r#"else PS1='$ $(printf "\033]0;agent-link-shell-status:%s\007" "$?")'; fi"#,
+        "\n",
+    );
+    term.terminal().write(setup.as_bytes()).unwrap();
+    wait_screen(term.terminal(), WAIT, |screen| {
+        screen.title == "agent-link-shell-status:0"
+    });
+}
+
+/// The unread-input fake exits successfully, whereas the shell's next Ctrl-C produces
+/// status 1 (macOS Bash 3.2 as sh) or 130. Its title was replaced by `--title` at launch,
+/// so this cannot be the old prompt before the agent. The OSC ends the new prompt:
+/// raw host input can follow without racing the queued interrupt or interleaving with
+/// the shell's prompt redraw.
+pub fn wait_for_interrupted_prompt(term: &AgentTerminal) -> ScreenSnapshot {
+    wait_screen(term.terminal(), WAIT, |screen| {
+        matches!(
+            screen.title.as_str(),
+            "agent-link-shell-status:1" | "agent-link-shell-status:130"
+        )
+    })
 }
 
 /// The test shell as an agent terminal for `agent` (not launched yet).
