@@ -3,6 +3,14 @@ use super::*;
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(10)
 }
+// These synthetic sessions validate the path but never access the filesystem.
+fn cwd() -> &'static str {
+    if cfg!(windows) {
+        r"C:\workspace"
+    } else {
+        "/workspace"
+    }
+}
 fn harness(limits: AcpLimits) -> (AcpClient, AcpEvents) {
     let (wake, _) = bounded(1);
     let shared = Arc::new(Shared {
@@ -61,7 +69,7 @@ fn initialized(limits: AcpLimits) -> (AcpClient, AcpEvents) {
 }
 fn ready(limits: AcpLimits) -> (AcpClient, AcpEvents) {
     let (app, events) = initialized(limits);
-    let new = app.session_new("/tmp", deadline()).unwrap();
+    let new = app.session_new(cwd(), deadline()).unwrap();
     response(&app, &new, json!({"sessionId":"s"}));
     (app, events)
 }
@@ -83,7 +91,7 @@ fn permission(app: &AcpClient, events: &AcpEvents, id: Value) -> Permission {
 #[test]
 fn handshake_restore_replay_and_exact_identity() {
     let (app, events) = initialized(AcpLimits::default());
-    let load = app.session_load("s", "/tmp", deadline()).unwrap();
+    let load = app.session_load("s", cwd(), deadline()).unwrap();
     input(
         &app,
         json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"replay"}}}}),
@@ -97,9 +105,7 @@ fn handshake_restore_replay_and_exact_identity() {
     assert!(app.failure().is_none());
     assert!(events.recv_until(deadline()).is_some());
     let (other, _) = initialized(AcpLimits::default());
-    let resume = other
-        .session_resume("original", "/tmp", deadline())
-        .unwrap();
+    let resume = other.session_resume("original", cwd(), deadline()).unwrap();
     response(&other, &resume, json!({"sessionId":"replacement"}));
     assert_eq!(other.failure(), Some(Failure::Protocol));
     assert_eq!(other.snapshot().session_id.as_deref(), Some("original"));
@@ -122,7 +128,7 @@ fn incompatible_version_and_unadvertised_restore_are_refused() {
         json!({"protocolVersion":1,"agentCapabilities":{}}),
     );
     assert!(matches!(
-        app.session_load("s", "/tmp", deadline()),
+        app.session_load("s", cwd(), deadline()),
         Err(AcpError::InvalidState)
     ));
     assert!(app.snapshot().session_id.is_none());
@@ -238,7 +244,7 @@ fn saturation_is_terminal_but_native_response_is_authoritative() {
 #[test]
 fn failed_restore_does_not_create_a_session_and_late_ids_are_ignored() {
     let (app, _) = initialized(AcpLimits::default());
-    let load = app.session_load("s", "/tmp", deadline()).unwrap();
+    let load = app.session_load("s", cwd(), deadline()).unwrap();
     {
         let mut s = lock(&app.shared.state);
         s.pending.back_mut().unwrap().dispatched = true;

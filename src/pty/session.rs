@@ -1232,6 +1232,8 @@ mod tests {
                     Ok(Event::Output { bytes, .. }) => {
                         text.push_str(&String::from_utf8_lossy(&bytes));
                     }
+                    // ConPTY emits title and other metadata before command output.
+                    Ok(Event::Title { .. } | Event::Progress { .. } | Event::Frame { .. }) => {}
                     other => panic!("no {needle:?} ({other:?}); output so far: {text:?}"),
                 }
             }
@@ -1321,7 +1323,7 @@ mod tests {
             let (term, events) =
                 Terminal::spawn_with(SpawnSpec::shell(dir.path(), size()), hooks).unwrap();
             assert!(term.inner.job.is_none());
-            term.write(b"echo agent^-pty^-7\r").unwrap();
+            term.write(b"echo agent^-link^-7\r").unwrap();
             output_until(&events, "agent-link-7");
             wait_for("the shell in front", || {
                 term.foreground().owner == ForegroundOwner::Shell
