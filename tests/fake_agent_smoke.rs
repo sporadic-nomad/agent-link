@@ -582,7 +582,7 @@ fn a_bad_scene_or_flag_exits_2_with_usage() {
                 format!("agent-link-fake-agent: {error}").as_str(),
                 "usage: agent-link-fake-agent <scene> [--sync] [--title] [--exit-on-input]",
                 "       [--reset-delay-ms N] [--reset-silence-ms N] [--dialog-after-ms N]",
-                "       [--swallow-ms N] [--keep-frame]",
+                "       [--swallow-ms N] [--keep-frame] [--hold-submit-display]",
                 &scenes,
             ],
             "{args:?}"
