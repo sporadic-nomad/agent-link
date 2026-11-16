@@ -63,7 +63,7 @@ Every PTY session emits `Event` values to all registered receivers (`spawn`, `su
 | Variant | Feature | Meaning |
 | --- | --- | --- |
 | `Output { id, seq, bytes }` | always | Raw PTY bytes (up to 8 KiB per chunk). `seq` starts at `0` and increments by `1`. |
-| `Exit { id, status }` | always | Child closed stdout / reached natural EOF. Currently `status` is `None` (use `try_wait()` for the exit code). Never sent after `kill()`/`Drop`. Sticky for late receivers. |
+| `Exit { id, status }` | always | PTY output reached natural EOF. Currently `status` is `None` (use `try_wait()` for the exit code). Never sent after `kill()`/`Drop`. Sticky for late receivers. |
 | `Title { id, title }` | `screen` | Window title updated via OSC 0 or OSC 2. |
 | `Progress { id, state }` | `screen` | OSC 9;4 progress state (`Clear`, `Normal(Option<u8>)`, `Error(Option<u8>)`, `Indeterminate`, `Paused(Option<u8>)`). |
 | `Frame { id }` | `screen` | DEC 2026 synchronized-output frame ended (`CSI ? 2026 l` or `ESC c` while in frame). |
@@ -71,6 +71,14 @@ Every PTY session emits `Event` values to all registered receivers (`spawn`, `su
 | `AgentState`, `Activity`, `Delivery`, `CommitPoint` | `agent` | Emitted by `AgentTerminal`'s controller ([Agents & Delivery](agents-and-delivery.md)). |
 
 Use `forward_to(events, |ev| { ... })` to process a `Receiver<Event>` on a dedicated `"agent-link-forward"` thread.
+
+**Windows process completion:** ConPTY can keep the output pipe open after all child
+processes exit. The current backend retains the pseudoconsole until teardown, so an
+`Exit` event may never arrive while the session is alive. Continue draining events and
+poll `Terminal::try_wait()` to observe the direct child's status, then explicitly drop
+or kill the session when it is no longer needed. `try_wait()` does not fence output:
+the reader can still have bytes to publish after the process exits. Teardown preserves
+the observed exit status, disconnects receivers and does not synthesize an `Exit` event.
 
 ### Backpressure Rules
 

@@ -448,7 +448,10 @@ fails to spawn. A successful version probe does not certify a native protocol or
   calls, or retry that error.
 - **Linux — unverified**: uses the Unix implementation; native tests are configured in CI.
 - **Windows — unverified** (ConPTY, Job Objects): native tests are configured in CI;
-  foreground answers are heuristic.
+  foreground answers are heuristic. ConPTY can retain its output pipe after child
+  completion, so `Event::Exit` may not arrive while the session is alive. Drain events
+  while polling `Terminal::try_wait`, then explicitly drop or kill the session when it
+  is no longer needed. Process completion does not mean all output has been drained.
 
 **Only macOS has verified native runtime results for this release.** Linux and Windows
 remain implementation targets with unverified runtime support. Successful native test

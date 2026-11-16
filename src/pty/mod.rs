@@ -302,6 +302,11 @@ pub enum Event {
     /// [`Terminal::attach`]) gets it first. Not sent once teardown has started: only one
     /// queued just before can still be read after `kill` returns, so a teardown is never
     /// reported as an exit.
+    ///
+    /// On Windows, ConPTY can keep the output pipe open after every child exits, until
+    /// the session is torn down. Do not rely on this event for Windows process completion:
+    /// continue draining output and poll [`Terminal::try_wait`], then explicitly drop or
+    /// kill the session when it is no longer needed. Teardown does not synthesize `Exit`.
     Exit {
         /// The session.
         id: SessionId,

@@ -197,6 +197,7 @@ pub fn output_until(rx: &Receiver<Event>, needle: &str) -> String {
                     return text;
                 }
             }
+            Ok(Event::Title { .. } | Event::Progress { .. } | Event::Frame { .. }) => {}
             Ok(event) => panic!("{event:?} before {needle:?}; output so far: {text:?}"),
             Err(e) => panic!("no {needle:?} ({e}); output so far: {text:?}"),
         }

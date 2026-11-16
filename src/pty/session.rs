@@ -420,6 +420,11 @@ impl Terminal {
     /// unknown status and is not signalled during teardown. Hosts that reap children
     /// concurrently must coordinate their reaper with teardown: the ownership check and
     /// PID-based signals cannot be atomic.
+    ///
+    /// This reports process completion, not fully drained output. On Windows, ConPTY can
+    /// retain its output pipe after the child exits, so [`Event::Exit`] may never arrive
+    /// while the session is alive. Keep draining events while polling this method, then
+    /// explicitly drop or kill the session when it is no longer needed.
     pub fn try_wait(&self) -> Option<ExitInfo> {
         self.inner.try_wait()
     }

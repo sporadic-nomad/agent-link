@@ -10,6 +10,12 @@ The first release.
 
 ### Changed during publication hardening
 
+- Documented the Windows ConPTY lifetime limitation: child completion can leave the
+  output pipe open, so hosts must drain events and poll `Terminal::try_wait()` instead
+  of relying only on `Event::Exit`, then explicitly tear down the session. Windows
+  integration tests now check output, process status and cleanup separately; the
+  natural-output-EOF event contract is unchanged.
+
 - Corrected native test fixtures for Linux Bash startup and Windows ACP paths and
   PTY events, preserving the delivery and process-lifecycle assertions.
 

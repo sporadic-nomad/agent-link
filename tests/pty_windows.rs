@@ -7,17 +7,28 @@
 mod common;
 
 use agent_link::{Confidence, Event, ForegroundOwner, PtySize, SpawnSpec, Terminal};
-use common::{WAIT, deadline, output_until, recv_until, wait_until};
-use crossbeam_channel::RecvTimeoutError;
+use common::{WAIT, deadline, output_until, wait_until};
+use crossbeam_channel::{Receiver, RecvTimeoutError};
 
 const SIZE: PtySize = PtySize { rows: 24, cols: 80 };
+
+fn assert_disconnects(events: &Receiver<Event>) {
+    let deadline = deadline();
+    loop {
+        match events.recv_deadline(deadline) {
+            Ok(_) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Timeout) => panic!("the receiver did not disconnect"),
+        }
+    }
+}
 
 #[test]
 fn echo_round_trip_in_cmd() {
     let dir = tempfile::tempdir().unwrap();
     let (term, events) = Terminal::spawn(SpawnSpec::shell(dir.path(), SIZE)).unwrap();
     // The carets keep the echoed command line from matching.
-    term.write(b"echo agent^-pty^-42\r").unwrap();
+    term.write(b"echo agent^-link^-42\r").unwrap();
     output_until(&events, "agent-link-42");
 }
 
@@ -45,36 +56,31 @@ fn teardown_sends_no_exit_and_disconnects() {
     }
 }
 
-/// Unverified: ConPTY may keep the output pipe open after the child exits (until the
-/// pseudoconsole closes at teardown), in which case no `Exit` arrives and this fails.
+/// ConPTY can retain its output pipe after the child exits. Process completion is
+/// observable through `try_wait`; `Exit` means output EOF, not process completion.
 #[test]
-fn a_direct_child_that_exits_sends_exit() {
+fn a_direct_child_exit_reports_status_and_preserves_output() {
     let dir = tempfile::tempdir().unwrap();
     let spec = SpawnSpec::direct("cmd.exe", ["/d", "/c", "echo hi"], dir.path(), SIZE);
     let (term, events) = Terminal::spawn(spec).unwrap();
-    let deadline = deadline();
-    let mut text = String::new();
-    loop {
-        match events.recv_deadline(deadline) {
-            Ok(Event::Output { bytes, .. }) => text.push_str(&String::from_utf8_lossy(&bytes)),
-            Ok(Event::Exit { .. }) => break,
-            Ok(other) => panic!("unexpected {other:?}"),
-            Err(e) => panic!("no Exit ({e}); output: {text:?}"),
-        }
-    }
-    assert!(text.contains("hi"), "{text:?}");
+    output_until(&events, "hi");
+    wait_until("try_wait to report the exit", || term.try_wait().is_some());
     assert_eq!(term.try_wait().map(|e| e.status), Some(Some(0)));
+    assert_eq!(term.kill().status, Some(0), "teardown keeps the real code");
+    assert_disconnects(&events);
 }
 
-/// Unverified, like the direct case above: a shell's `exit` may not end the output either.
+/// Shell completion has the same process/output distinction as a direct child.
 #[test]
-fn a_shell_that_exits_sends_exit() {
+fn a_shell_exit_reports_status_and_preserves_output() {
     let dir = tempfile::tempdir().unwrap();
     let (term, events) = Terminal::spawn(SpawnSpec::shell(dir.path(), SIZE)).unwrap();
-    term.write(b"exit 3\r").unwrap();
-    recv_until(&events, deadline(), |e| matches!(e, Event::Exit { .. }));
+    term.write(b"echo exiting^-3 & exit 3\r").unwrap();
+    output_until(&events, "exiting-3");
     wait_until("try_wait to report the exit", || term.try_wait().is_some());
     assert_eq!(term.try_wait().unwrap().status, Some(3));
+    assert_eq!(term.kill().status, Some(3), "teardown keeps the real code");
+    assert_disconnects(&events);
 }
 
 /// The heuristic from the child's Job Object: the shell alone ⇒ `Shell`, a program it runs
