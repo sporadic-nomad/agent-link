@@ -1,0 +1,8 @@
+/target/
+/.worktrees/
+/.archive/
+/*.crate
+.DS_Store
+
+# Local technical knowledge base; public user documentation belongs in docs/.
+/internal-docs/

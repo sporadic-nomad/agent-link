@@ -1,0 +1,36 @@
+[package]
+name = "agent-link-daemon"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+license = "MIT"
+description = "Private local durable Codex worker host."
+
+[dependencies]
+agent-link = { path = "..", default-features = false, features = ["codex"] }
+agent-link-supervisor = { path = "../supervisor", features = ["codex"] }
+serde_json = "1"
+getrandom = "0.2"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# Offline test process only; never needed by daemon deployments.
+test-support = []
+
+[[bin]]
+name = "daemon-fixture"
+path = "tests/support/host.rs"
+required-features = ["test-support"]
+test = false
+doc = false
+
+[[test]]
+name = "ipc"
+required-features = ["test-support"]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

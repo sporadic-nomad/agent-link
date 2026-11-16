@@ -1,0 +1,10 @@
+rows=40
+cols=120
+identity=honest
+agent=cursor
+version=2026.11.13-eacade1
+scene=force-login
+launch_args=--force
+credentials=none
+platform=macos-arm64
+captured=2026-11-14

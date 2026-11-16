@@ -1,0 +1,40 @@
+
+ pi v0.85.1                                                                                                             
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more                                        
+ Press ctrl+o to show full startup help and loaded resources.                                                           
+                                                                                                                        
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.                                  
+
+
+ Warning: No models available. Use /login to log into a provider via OAuth or API key. See:                             
+   /home/u/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md                          
+   /home/u/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md                             
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available                                                                                                       
+ New version 1.1.0 is available. Run pi update                                                                          
+ Changelog: https://pi.dev/changelog                                                                                    
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/private/tmp/apt.pa9M0w
+0.0%/0 (auto)                                                                                                    unknown
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

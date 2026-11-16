@@ -1,0 +1,15 @@
+{
+  "provenance": {
+    "kind": "synthetic schema projection; not a live capture",
+    "schema_crate": "agent-client-protocol-schema 1.17.0",
+    "schema_revision": "0849001ca66fb975fc01111ddab9093bc8304e98",
+    "sdk_revision": "91d368ad8b6761f314da9095c4a030d365c079a9",
+    "scope": "stable-v1 initialize, session lifecycle, text updates, permissions; no provider certification"
+  },
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {"loadSession": true, "sessionCapabilities": {"resume": {}}},
+    "agentInfo": {"name": "synthetic", "version": "1"},
+    "future": true
+  }
+}

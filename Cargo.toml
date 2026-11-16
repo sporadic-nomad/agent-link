@@ -1,0 +1,205 @@
+[package]
+name = "agent-link"
+version = "0.1.0"
+edition = "2024"
+# Minimum supported Rust version; checked separately in CI.
+rust-version = "1.85"
+description = "Integrate external AI agents into Rust applications through PTY and structured stdio transports."
+license = "MIT"
+publish = ["crates-io"]
+readme = "README.md"
+repository = "https://github.com/sporadic-nomad/agent-link"
+documentation = "https://docs.rs/agent-link"
+keywords = ["ai", "agent", "pty", "terminal", "automation"]
+categories = ["command-line-interface", "development-tools"]
+include = ["/src/**", "/tests/**", "/examples/**", "/docs/**", "/scripts/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/CHANGELOG.md", "/LICENSE", "/CONTRIBUTING.md", "/AGENTS.md", "!**/.DS_Store", "!**/__pycache__/**"]
+
+[workspace]
+members = ["supervisor", "daemon", "http"]
+default-members = ["."]
+resolver = "3"
+
+# docs.rs documents the default features only unless told otherwise; `codex`, `claude`, `rpc`, `probe` and
+# `tokio` items must show too.
+[package.metadata.docs.rs]
+features = ["acp", "claude", "codex", "rpc", "probe", "tokio", "observers", "transcript", "approvals"]
+
+[features]
+default = ["screen", "agent"]
+# Development only: enables the fixture executable and integration tests that drive it.
+# Applications should not enable this feature.
+test-support = []
+# Headless terminal model, the signal tap (title, progress, sync frames, queries) and
+# screen-text normalisation, which needs `regex`.
+screen = ["dep:vt100", "dep:regex"]
+# Agent profiles and the delivery controller; detection reads the screen model.
+agent = ["screen"]
+# Stdio line transport for agents that speak JSON over stdin/stdout.
+rpc = ["agent"]      # RpcLaunch comes from AgentProfile::rpc_launch
+# Bounded, owned-stdio Codex app-server v2 protocol pilot.
+codex = ["rpc", "dep:serde_json"]
+# Bounded stable-v1 Agent Client Protocol over owned stdio.
+acp = ["rpc", "dep:serde_json"]
+# Persistent Claude stream-json sessions; independent custom control protocol.
+claude = ["rpc", "dep:serde_json"]
+# Installed / signed-in checks for agent CLIs.
+probe = ["agent"]    # probe_agents takes AgentProfile values
+# Async adapters over the blocking API: event streams, awaitable tickets, teardown on
+# Tokio's blocking pool (`async_api`).
+tokio = ["dep:tokio"]
+# Bounded transport-neutral PTY observer fanout.
+observers = []
+# Bounded presentation projection; no screen parser or runtime dependency.
+transcript = []
+
+# Opt-in bounded native approval callback workers; adapters remain independently gated.
+approvals = []
+
+[dependencies]
+# PTY pair and child spawn on every platform (openpty on unix, ConPTY on Windows).
+portable-pty = "0.9"
+# Channels for event delivery and session input.
+crossbeam-channel = "0.5"
+# Logging facade only — the host installs the logger.
+log = "0.4"
+# Derive for `Error`.
+thiserror = "2"
+# Native protocol data only; no vendor SDK or async runtime.
+serde_json = { version = "1", optional = true }
+# `screen`: the headless emulator fed the same bytes the host's renderer gets.
+vt100 = { version = "0.16", optional = true }
+# `screen` (text normalisation) and `agent` (screen markers): 1:1 ports of the JavaScript regexes they replace.
+regex = { version = "1", optional = true }
+# `tokio`: the async adapters — `sync` for the stream channels and the ticket wakeup, `rt`
+# for `spawn_blocking` (teardown off the runtime threads). Nothing else. 1.37: `mpsc::Receiver::len`.
+tokio = { version = "1.37", optional = true, features = ["sync", "rt"] }
+
+[target.'cfg(unix)'.dependencies]
+# Process-group kill on teardown and the `tcgetpgrp` foreground query.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Job Object tree kill (`Win32_Security`: CreateJobObjectW), Toolhelp snapshots (foreground), console raw mode.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Console",
+] }
+
+[dev-dependencies]
+# Throwaway working directories and log files in tests.
+tempfile = "3"
+# Live smokes (`tests/vendor_live.rs`): strips hooks and MCP servers from the scratch
+# copies of the agents' JSON configs.
+serde_json = "1"
+# The async adapters' tests (`tests/tokio_api.rs`, the `tokio` unit tests): `#[tokio::test]`
+# and deadlines. Test builds only — the library itself uses `sync` and `rt` (the gate lints
+# the library alone too). 1.38: `mpsc::Receiver::max_capacity`.
+tokio = { version = "1.38", features = ["macros", "rt", "time"] }
+
+# Spike tool and fixture recorder: runs a command in a PTY, records the stream, logs the
+# terminal signals and writes a fixture set. Its unit tests cover the payload parser,
+# the event escaping, the sanitiser, the identity env stripping, the stdin reply filter
+# and the signal tap.
+[[example]]
+name = "capture"
+required-features = ["screen"]
+test = true
+
+# The README's examples (it quotes excerpts; `tests/readme.rs` keeps them in sync): a login
+# shell round trip, one message to an agent CLI (a real turn on the user's account), and a
+# JSON-lines child with `cat` as the agent.
+[[example]]
+name = "bare_shell"
+required-features = ["screen"]
+
+[[example]]
+name = "agent_send"
+required-features = ["agent"]
+
+[[example]]
+name = "rpc_child"
+required-features = ["rpc"]
+
+# Built only when explicitly enabled for the test suite, never for a normal library build.
+[[bin]]
+name = "agent-link-fake-agent"
+path = "tests/support/fake_agent.rs"
+required-features = ["test-support"]
+test = false
+doc = false
+
+[[test]]
+name = "agent_delivery"
+required-features = ["agent", "test-support"]
+
+[[test]]
+name = "agent_delivery_owner"
+required-features = ["agent", "test-support"]
+
+[[test]]
+name = "agent_reset"
+required-features = ["agent", "test-support"]
+
+[[test]]
+name = "agent_startup"
+required-features = ["agent", "test-support"]
+
+[[test]]
+name = "agent_strict"
+required-features = ["agent", "test-support"]
+
+[[test]]
+name = "fake_agent_smoke"
+required-features = ["agent", "test-support"]
+
+[[test]]
+name = "tokio_api"
+required-features = ["tokio", "test-support"]
+
+[[test]]
+name = "codex_adapter"
+required-features = ["codex", "test-support"]
+
+[[example]]
+name = "codex_app_server"
+required-features = ["codex"]
+
+[[example]]
+name = "acp_prompt"
+required-features = ["acp"]
+
+[[example]]
+name = "claude_session"
+required-features = ["claude"]
+
+[[example]]
+name = "probe_agents"
+required-features = ["probe"]
+
+[[example]]
+name = "tokio_shell"
+required-features = ["tokio"]
+
+[[example]]
+name = "pty_recovery_observers"
+required-features = ["screen", "observers", "transcript"]
+
+[[example]]
+name = "custom_profile"
+required-features = ["agent"]
+
+[[test]]
+name = "acp_adapter"
+required-features = ["acp", "test-support"]
+
+[[test]]
+name = "claude_adapter"
+required-features = ["claude", "test-support"]
+
+[[test]]
+name = "example_behaviors"
+required-features = ["acp", "claude", "observers", "transcript", "test-support"]

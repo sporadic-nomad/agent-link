@@ -1,0 +1,6 @@
+{"t_ms":253,"kind":"query","which":"xtversion","answered":false}
+{"t_ms":253,"kind":"query","which":"kitty_keyboard","answered":false}
+{"t_ms":253,"kind":"query","which":"da1","answered":true}
+{"t_ms":253,"kind":"write","value":"\\e[?1\\;2c","source":"reply"}
+{"t_ms":265,"kind":"wait_text","needle":"Enter to confirm","found":true}
+{"t_ms":6066,"kind":"exit","status":1,"signal":"Killed: 9","killed":true}

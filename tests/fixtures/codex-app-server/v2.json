@@ -1,0 +1,15 @@
+{
+  "initialize": {"userAgent":"codex-fixture/0", "codexHome":"/isolated", "platformFamily":"unix", "platformOs":"fixture", "futureField":true},
+  "thread": {"thread":{"id":"t", "turns":[]}, "approvalPolicy":"never", "sandbox":{"type":"dangerFullAccess"}, "model":"fixture"},
+  "activeThread": {"thread":{"id":"t", "status":{"type":"active", "activeFlags":[]}, "turns":[{"id":"a", "status":"inProgress", "items":[], "error":null}]}, "approvalPolicy":"never", "sandbox":{"type":"dangerFullAccess"}, "model":"fixture"},
+  "started": {"method":"turn/started", "params":{"threadId":"t", "turn":{"id":"a", "status":"inProgress", "items":[], "error":null}}},
+  "delta": {"method":"item/agentMessage/delta", "params":{"threadId":"t", "turnId":"a", "itemId":"i", "delta":"hello 🌍"}},
+  "commentary": {"method":"item/completed", "params":{"threadId":"t", "turnId":"a", "item":{"id":"i", "type":"agentMessage", "text":"Checking the result.", "phase":"commentary", "futureField":{"keep":true}}}},
+  "final": {"method":"item/completed", "params":{"threadId":"t", "turnId":"a", "item":{"id":"i", "type":"agentMessage", "text":"hello 🌍, corrected", "phase":"final_answer", "futureField":true}}},
+  "tool": {"method":"item/completed", "params":{"threadId":"t", "turnId":"a", "item":{"id":"tool", "type":"commandExecution", "command":"fixture command", "status":"failed", "exitCode":1}}},
+  "usage": {"method":"thread/tokenUsage/updated", "params":{"threadId":"t", "turnId":"a", "tokenUsage":{"total":{"totalTokens":30,"inputTokens":20,"cachedInputTokens":5,"cacheWriteInputTokens":0,"outputTokens":10,"reasoningOutputTokens":2},"last":{"totalTokens":15,"inputTokens":10,"cachedInputTokens":3,"cacheWriteInputTokens":0,"outputTokens":5,"reasoningOutputTokens":1},"modelContextWindow":128000,"futureField":true}}},
+  "extension": {"method":"future/notification", "params":{"threadId":"t", "turnId":"a", "itemId":"i", "futurePayload":{"keep":[1,2,3]}}},
+  "completed": {"method":"turn/completed", "params":{"threadId":"t", "turn":{"id":"a", "status":"completed", "items":[], "error":null}}},
+  "approval": {"id":41, "method":"item/commandExecution/requestApproval", "params":{"threadId":"t", "turnId":"a", "itemId":"i", "startedAtMs":1, "command":"fixture command", "availableDecisions":["accept","decline","cancel"]}},
+  "fileApproval": {"id":"files", "method":"item/fileChange/requestApproval", "params":{"threadId":"t", "turnId":"a", "itemId":"files", "startedAtMs":1, "reason":null, "grantRoot":null}}
+}

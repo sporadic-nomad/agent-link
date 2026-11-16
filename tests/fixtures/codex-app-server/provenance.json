@@ -1,0 +1,9 @@
+{
+  "provider": "codex",
+  "protocol": "app-server v2 subset",
+  "revision": "b1573f102413e96a6481087922bf425231222dee",
+  "kind": "synthetic",
+  "fixture": "v2.json",
+  "scope": "initialize, root thread/turn lifecycle, event projection and command/file approvals",
+  "limits": "Manually authored projections, not full schemas or a live CLI capture. No version allowlist."
+}

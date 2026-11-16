@@ -1,0 +1,77 @@
+{"t_ms":20,"kind":"query","which":"cpr","answered":true}
+{"t_ms":20,"kind":"query","which":"osc10","answered":false}
+{"t_ms":20,"kind":"query","which":"osc11","answered":false}
+{"t_ms":20,"kind":"query","which":"kitty_keyboard","answered":false}
+{"t_ms":20,"kind":"query","which":"da1","answered":true}
+{"t_ms":20,"kind":"write","value":"\\e[1\\;1R","source":"reply"}
+{"t_ms":20,"kind":"write","value":"\\e[?1\\;2c","source":"reply"}
+{"t_ms":121,"kind":"frame_begin"}
+{"t_ms":122,"kind":"frame_end"}
+{"t_ms":122,"kind":"frame_begin"}
+{"t_ms":122,"kind":"frame_end"}
+{"t_ms":122,"kind":"frame_begin"}
+{"t_ms":122,"kind":"frame_end"}
+{"t_ms":122,"kind":"frame_begin"}
+{"t_ms":123,"kind":"frame_end"}
+{"t_ms":129,"kind":"frame_begin"}
+{"t_ms":129,"kind":"frame_end"}
+{"t_ms":130,"kind":"frame_begin"}
+{"t_ms":130,"kind":"frame_end"}
+{"t_ms":132,"kind":"frame_begin"}
+{"t_ms":132,"kind":"frame_end"}
+{"t_ms":134,"kind":"frame_begin"}
+{"t_ms":134,"kind":"frame_end"}
+{"t_ms":134,"kind":"frame_begin"}
+{"t_ms":134,"kind":"frame_end"}
+{"t_ms":142,"kind":"frame_begin"}
+{"t_ms":142,"kind":"frame_end"}
+{"t_ms":142,"kind":"frame_begin"}
+{"t_ms":142,"kind":"frame_end"}
+{"t_ms":144,"kind":"frame_begin"}
+{"t_ms":144,"kind":"frame_end"}
+{"t_ms":147,"kind":"frame_begin"}
+{"t_ms":147,"kind":"frame_end"}
+{"t_ms":147,"kind":"frame_begin"}
+{"t_ms":147,"kind":"frame_end"}
+{"t_ms":148,"kind":"frame_begin"}
+{"t_ms":148,"kind":"frame_end"}
+{"t_ms":158,"kind":"frame_begin"}
+{"t_ms":158,"kind":"frame_end"}
+{"t_ms":162,"kind":"frame_begin"}
+{"t_ms":162,"kind":"frame_end"}
+{"t_ms":163,"kind":"title","value":"apt.Q8WWm4"}
+{"t_ms":163,"kind":"frame_begin"}
+{"t_ms":164,"kind":"frame_end"}
+{"t_ms":164,"kind":"frame_begin"}
+{"t_ms":164,"kind":"frame_end"}
+{"t_ms":181,"kind":"frame_begin"}
+{"t_ms":181,"kind":"frame_end"}
+{"t_ms":188,"kind":"title","value":"⠋ apt.Q8WWm4"}
+{"t_ms":200,"kind":"wait_text","needle":"OpenAI Codex","found":true}
+{"t_ms":209,"kind":"frame_begin"}
+{"t_ms":209,"kind":"frame_end"}
+{"t_ms":210,"kind":"frame_begin"}
+{"t_ms":210,"kind":"frame_end"}
+{"t_ms":312,"kind":"title","value":"⠙ apt.Q8WWm4"}
+{"t_ms":349,"kind":"title","value":"apt.Q8WWm4"}
+{"t_ms":350,"kind":"frame_begin"}
+{"t_ms":350,"kind":"frame_end"}
+{"t_ms":2504,"kind":"write","value":"/clear","source":"script"}
+{"t_ms":2527,"kind":"frame_begin"}
+{"t_ms":2528,"kind":"frame_end"}
+{"t_ms":4005,"kind":"write","value":"\\r","source":"script"}
+{"t_ms":4007,"kind":"frame_begin"}
+{"t_ms":4007,"kind":"frame_end"}
+{"t_ms":4053,"kind":"title","value":"apt.Q8WWm4"}
+{"t_ms":4071,"kind":"frame_begin"}
+{"t_ms":4071,"kind":"frame_end"}
+{"t_ms":4071,"kind":"frame_begin"}
+{"t_ms":4072,"kind":"frame_end"}
+{"t_ms":4072,"kind":"title","value":"⠋ apt.Q8WWm4"}
+{"t_ms":4073,"kind":"frame_begin"}
+{"t_ms":4073,"kind":"frame_end"}
+{"t_ms":4175,"kind":"title","value":"⠙ apt.Q8WWm4"}
+{"t_ms":4242,"kind":"title","value":"apt.Q8WWm4"}
+{"t_ms":4244,"kind":"frame_begin"}
+{"t_ms":4244,"kind":"frame_end"}
+{"t_ms":8063,"kind":"exit","status":1,"signal":"Killed: 9","killed":true}

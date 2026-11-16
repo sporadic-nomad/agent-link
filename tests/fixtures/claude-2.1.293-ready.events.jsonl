@@ -1,0 +1,6 @@
+{"t_ms":359,"kind":"title","value":"✳ Claude Code"}
+{"t_ms":416,"kind":"query","which":"xtversion","answered":false}
+{"t_ms":416,"kind":"query","which":"kitty_keyboard","answered":false}
+{"t_ms":416,"kind":"query","which":"da1","answered":true}
+{"t_ms":416,"kind":"write","value":"\\e[?1\\;2c","source":"reply"}
+{"t_ms":8071,"kind":"exit","status":1,"signal":"Killed: 9","killed":true}

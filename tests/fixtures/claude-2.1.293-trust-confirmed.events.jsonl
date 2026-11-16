@@ -1,0 +1,12 @@
+{"t_ms":501,"kind":"query","which":"xtversion","answered":false}
+{"t_ms":501,"kind":"query","which":"kitty_keyboard","answered":false}
+{"t_ms":501,"kind":"query","which":"da1","answered":true}
+{"t_ms":501,"kind":"write","value":"\\e[?1\\;2c","source":"reply"}
+{"t_ms":522,"kind":"wait_text","needle":"Enter to confirm","found":true}
+{"t_ms":2505,"kind":"write","value":"\\e[B","source":"script"}
+{"t_ms":3504,"kind":"write","value":"\\r","source":"script"}
+{"t_ms":3696,"kind":"title","value":"✳ Claude Code"}
+{"t_ms":3793,"kind":"query","which":"xtversion","answered":false}
+{"t_ms":3793,"kind":"query","which":"da1","answered":true}
+{"t_ms":3793,"kind":"write","value":"\\e[?1\\;2c","source":"reply"}
+{"t_ms":9073,"kind":"exit","status":1,"signal":"Killed: 9","killed":true}

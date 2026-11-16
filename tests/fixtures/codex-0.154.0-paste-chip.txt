@@ -1,0 +1,40 @@
+╭─────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                      │
+│                                                 │
+│ model:       gpt-6-sol xhigh   /model to change │
+│ directory:   /private/tmp/apt.Q8WWm4            │
+│ permissions: YOLO mode                          │
+╰─────────────────────────────────────────────────╯
+
+  Tip: Switch models or reasoning effort quickly with /model.
+ 
+ 
+› first line of the pasted text
+  second line of the pasted text
+  third line of the pasted text
+ 
+  gpt-6-sol xhigh · /private/tmp/apt.Q8WWm4
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

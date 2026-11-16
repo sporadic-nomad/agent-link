@@ -1,0 +1,66 @@
+{"t_ms":20,"kind":"query","which":"cpr","answered":true}
+{"t_ms":20,"kind":"query","which":"osc10","answered":false}
+{"t_ms":20,"kind":"query","which":"osc11","answered":false}
+{"t_ms":20,"kind":"query","which":"kitty_keyboard","answered":false}
+{"t_ms":20,"kind":"query","which":"da1","answered":true}
+{"t_ms":20,"kind":"write","value":"\\e[1\\;1R","source":"reply"}
+{"t_ms":20,"kind":"write","value":"\\e[?1\\;2c","source":"reply"}
+{"t_ms":121,"kind":"frame_begin"}
+{"t_ms":122,"kind":"frame_end"}
+{"t_ms":122,"kind":"frame_begin"}
+{"t_ms":122,"kind":"frame_end"}
+{"t_ms":122,"kind":"frame_begin"}
+{"t_ms":122,"kind":"frame_end"}
+{"t_ms":123,"kind":"frame_begin"}
+{"t_ms":123,"kind":"frame_end"}
+{"t_ms":130,"kind":"frame_begin"}
+{"t_ms":130,"kind":"frame_end"}
+{"t_ms":130,"kind":"frame_begin"}
+{"t_ms":130,"kind":"frame_end"}
+{"t_ms":132,"kind":"frame_begin"}
+{"t_ms":133,"kind":"frame_end"}
+{"t_ms":133,"kind":"frame_begin"}
+{"t_ms":133,"kind":"frame_end"}
+{"t_ms":134,"kind":"frame_begin"}
+{"t_ms":134,"kind":"frame_end"}
+{"t_ms":141,"kind":"frame_begin"}
+{"t_ms":141,"kind":"frame_end"}
+{"t_ms":141,"kind":"frame_begin"}
+{"t_ms":141,"kind":"frame_end"}
+{"t_ms":142,"kind":"frame_begin"}
+{"t_ms":142,"kind":"frame_end"}
+{"t_ms":144,"kind":"frame_begin"}
+{"t_ms":144,"kind":"frame_end"}
+{"t_ms":146,"kind":"frame_begin"}
+{"t_ms":146,"kind":"frame_end"}
+{"t_ms":146,"kind":"frame_begin"}
+{"t_ms":146,"kind":"frame_end"}
+{"t_ms":151,"kind":"frame_begin"}
+{"t_ms":151,"kind":"frame_end"}
+{"t_ms":157,"kind":"frame_begin"}
+{"t_ms":157,"kind":"frame_end"}
+{"t_ms":161,"kind":"frame_begin"}
+{"t_ms":161,"kind":"frame_end"}
+{"t_ms":162,"kind":"title","value":"apt.Q8WWm4"}
+{"t_ms":162,"kind":"frame_begin"}
+{"t_ms":162,"kind":"frame_end"}
+{"t_ms":163,"kind":"frame_begin"}
+{"t_ms":163,"kind":"frame_end"}
+{"t_ms":180,"kind":"frame_begin"}
+{"t_ms":180,"kind":"frame_end"}
+{"t_ms":185,"kind":"title","value":"⠋ apt.Q8WWm4"}
+{"t_ms":204,"kind":"wait_text","needle":"OpenAI Codex","found":true}
+{"t_ms":209,"kind":"frame_begin"}
+{"t_ms":210,"kind":"frame_end"}
+{"t_ms":210,"kind":"frame_begin"}
+{"t_ms":210,"kind":"frame_end"}
+{"t_ms":219,"kind":"frame_begin"}
+{"t_ms":219,"kind":"frame_end"}
+{"t_ms":321,"kind":"title","value":"⠙ apt.Q8WWm4"}
+{"t_ms":347,"kind":"title","value":"apt.Q8WWm4"}
+{"t_ms":348,"kind":"frame_begin"}
+{"t_ms":348,"kind":"frame_end"}
+{"t_ms":2505,"kind":"write","value":"\\e[200~first line of the pasted text\\nsecond line of the pasted text\\nthird line of the pasted text\\e[201~","source":"script"}
+{"t_ms":2507,"kind":"frame_begin"}
+{"t_ms":2508,"kind":"frame_end"}
+{"t_ms":7071,"kind":"exit","status":1,"signal":"Hangup: 1","killed":true}

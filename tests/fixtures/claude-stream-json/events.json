@@ -1,0 +1,5 @@
+{
+  "init": {"type":"system","subtype":"init","session_id":"provider-session"},
+  "result": {"type":"result","subtype":"success","is_error":false,"session_id":"provider-session","duration_ms":1,"duration_api_ms":1,"num_turns":1,"total_cost_usd":0,"stop_reason":"end_turn","user_message_uuids":["synthetic","other-prompt"],"usage":{"input_tokens":17},"future":{"kept":true}},
+  "approval": {"type":"control_request","request_id":"permission-exact","request":{"subtype":"can_use_tool","tool_name":"Read","input":{"file_path":"synthetic"}}}
+}

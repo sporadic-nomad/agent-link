@@ -1,0 +1,4 @@
+# Keep source and rendered fixture text consistent across native CI checkouts.
+* text=auto eol=lf
+# Recorded PTY output contains intentional CR/LF and control bytes.
+*.bin binary

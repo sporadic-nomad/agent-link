@@ -1,0 +1,6 @@
+rows=40
+cols=120
+identity=honest
+agent=pi
+version=0.85.1
+scene=trust

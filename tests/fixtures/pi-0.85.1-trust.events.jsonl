@@ -1,0 +1,22 @@
+{"t_ms":245,"kind":"query","which":"kitty_keyboard","answered":false}
+{"t_ms":245,"kind":"query","which":"da1","answered":true}
+{"t_ms":246,"kind":"write","value":"\\e[?1\\;2c","source":"reply"}
+{"t_ms":251,"kind":"frame_begin"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"osc","params":"8;;"}
+{"t_ms":251,"kind":"frame_end"}
+{"t_ms":8069,"kind":"exit","status":1,"signal":"Killed: 9","killed":true}
