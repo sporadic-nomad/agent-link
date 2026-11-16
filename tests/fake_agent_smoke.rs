@@ -430,7 +430,10 @@ fn progress_reports_progress_frames_and_a_spinner_title() {
 /// `fake`. ^C reaches the main loop (not a signal handler), so it exits between writes.
 #[test]
 fn reset_and_interrupt_end_the_working_signals() {
-    let (term, events, _home) = direct(&["progress", "--sync", "--title"]);
+    // Retain the old footer briefly after progress clears: it must not authorize
+    // input while the reset is still discarding keys.
+    let (term, events, _home) =
+        direct(&["progress", "--sync", "--title", "--reset-silence-ms", "100"]);
     let mut progress = Vec::new();
     let mut titles = Vec::new();
     let mut record = |event: &Event| match event {
@@ -451,7 +454,13 @@ fn reset_and_interrupt_end_the_working_signals() {
             }
         )
     });
-    screen_contains(&term, FOOTER, WAIT);
+    // Clear precedes the reset redraw. A later completed frame with the empty
+    // composer proves the reset finished; the old footer alone does not.
+    wait_event(&term, &events, WAIT, |e| {
+        record(e);
+        matches!(e, Event::Frame { .. })
+            && content(&term.screen().unwrap()) == ["fake-agent v1 (progress)", ">", FOOTER]
+    });
     term.write(b"go\r").unwrap();
     wait_event(&term, &events, WAIT, |e| {
         record(e);
