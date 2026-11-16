@@ -77,12 +77,15 @@ const ZSH_AS_SH_RC: &str = concat!(
 /// own: an inputrc for readline (bash 5.1+, a `/bin/sh` on Linux, turns it on at every
 /// prompt) and, as the only rc file (`ENV`), one for zsh run as `sh` (macOS can select it
 /// for `/bin/sh`; it reads `ENV`, and turns it on unless `zle_bracketed_paste` is unset
-/// after zle loaded). Other shells find nothing to do in that file.
+/// after zle loaded). Other shells find nothing to do in that file. A `.bashrc` restores
+/// the prompt for tests that select Bash by name: its system startup file can replace the
+/// inherited `PS1` before Bash reads this isolated home directory's configuration.
 pub fn test_env(home: &Path) -> EnvPolicy {
     let inputrc = home.join(".inputrc-agent-link");
     let _ = std::fs::write(&inputrc, "set enable-bracketed-paste off\n");
     let rc = home.join(".shrc-agent-link");
     let _ = std::fs::write(&rc, ZSH_AS_SH_RC);
+    std::fs::write(home.join(".bashrc"), "PS1='$ '\n").expect("write test Bash prompt");
     let mut env = EnvPolicy::default();
     env.set("PS1", "$ ")
         .set("ENV", &rc)
