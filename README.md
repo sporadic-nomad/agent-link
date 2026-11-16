@@ -14,8 +14,8 @@ The crate has no UI and no host-framework dependency: a desktop app, a TUI or a 
 harness renders the byte stream itself and drives the agent through a synchronous,
 thread-backed API. Async adapters for Tokio sit behind a feature.
 
-**Status: 0.1.0, unreleased.** A standalone library for desktop apps, TUIs, services and
-test harnesses. The API may still change before the first release. See the
+**Version: 0.1.0.** A standalone library for desktop apps, TUIs, services and
+test harnesses. Before 1.0, minor releases may introduce breaking API changes. See the
 [user manual](docs/README.md) for usage guides, or
 [release preparation](CONTRIBUTING.md#release-preparation) for publication requirements.
 
@@ -59,17 +59,18 @@ Drop behavior unchanged (see *Optional presentation and supervision layers* belo
 Default Cargo commands select `agent-link`; shared static/full and MSRV gates include all
 four workspace packages.
 
-Until it is published on crates.io, depend on the public Git repository:
+Add the crate from crates.io:
 
 ```toml
 [dependencies]
-agent-link = { git = "https://github.com/sporadic-nomad/agent-link" } # screen + agent
-# agent-link = { git = "https://github.com/sporadic-nomad/agent-link", default-features = false }
-# agent-link = { git = "https://github.com/sporadic-nomad/agent-link", features = ["rpc", "probe", "tokio"] }
+agent-link = "0.1" # screen + agent
+# agent-link = { version = "0.1", default-features = false }
+# agent-link = { version = "0.1", features = ["rpc", "probe", "tokio"] }
 # Optional native/presentation features: "acp", "claude", "codex", "approvals", "observers", "transcript"
 ```
 
-For a local checkout, replace `git` with `path = "../agent-link"`.
+For development, use `{ path = "../agent-link" }` or
+`{ git = "https://github.com/sporadic-nomad/agent-link" }` instead of the version.
 
 ## Examples
 

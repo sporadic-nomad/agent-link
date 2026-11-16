@@ -4,15 +4,17 @@ Notable changes to `agent-link`, in the [Keep a Changelog](https://keepachangelo
 format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html); before
 1.0 a minor version may break the API.
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-11-16
 
-The first version. Nothing is published yet; changes until the first release go into this
-entry.
+The first release.
 
 ### Changed during publication hardening
 
+- Fixed newer Rust CI builds for the HTTP crate with a scoped deprecation allowance,
+  preserving Rust 1.85 support and runtime behavior.
+
 - Added the public GitHub repository URL to package metadata and installation
-  examples. The crate remains unreleased on crates.io.
+  examples.
 
 - Clarified that agent status snapshots do not fence queued state/activity events;
   hosts displaying current status should refresh the snapshot on those events.

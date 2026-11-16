@@ -6,7 +6,7 @@ no UI or host-framework dependency: your application owns rendering and UX while
 manages child lifecycles, bounded event streams, startup steering, verified message delivery
 and protocol framing.
 
-> **Version:** `0.1.0` (unreleased) · **Edition:** Rust 2024 · **MSRV:** 1.85 · **License:** MIT
+> **Version:** `0.1.0` · **Edition:** Rust 2024 · **MSRV:** 1.85 · **License:** MIT
 
 Only **macOS** has verified native runtime results. Linux and Windows runtime support
 remains unverified; see [platform evidence](../README.md#platforms). The built-in Cursor

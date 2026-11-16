@@ -12,21 +12,22 @@ This chapter walks through adding `agent-link` to your project and running three
 - **Verified platform:** macOS only. Linux and Windows (ConPTY + Job Objects) are implementation targets with native CI configured, but their runtime support remains unverified. See the [platform evidence](../README.md#platforms).
 - **C compiler:** **not** required for `agent-link` itself. Only needed if you build the separate workspace crate `agent-link-supervisor` (which bundles SQLite).
 
-Add `agent-link` to `Cargo.toml` from its public Git repository until it is published on crates.io:
+Add `agent-link` from crates.io to `Cargo.toml`:
 
 ```toml
 [dependencies]
 # Default features: `screen` + `agent`
-agent-link = { git = "https://github.com/sporadic-nomad/agent-link" }
+agent-link = "0.1"
 
 # Minimal PTY-only build (no vt100, regex, or agent profiles)
-# agent-link = { git = "https://github.com/sporadic-nomad/agent-link", default-features = false }
+# agent-link = { version = "0.1", default-features = false }
 
 # Add headless stdio RPC, CLI probes, or Tokio adapters
-# agent-link = { git = "https://github.com/sporadic-nomad/agent-link", features = ["rpc", "probe", "tokio"] }
+# agent-link = { version = "0.1", features = ["rpc", "probe", "tokio"] }
 ```
 
-For a local checkout, replace `git` with `path = "../agent-link"`.
+For development, use `{ path = "../agent-link" }` or
+`{ git = "https://github.com/sporadic-nomad/agent-link" }` instead of the version.
 
 ---
 
