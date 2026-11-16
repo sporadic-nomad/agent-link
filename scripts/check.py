@@ -35,7 +35,7 @@ def main():
     env["RUSTDOCFLAGS"] = (env.get("RUSTDOCFLAGS", "") + " -D warnings").strip()
     run("cargo", "doc", "--locked", "--workspace", "--no-deps", "--all-features", env=env)
     if not args.skip_tests:
-        run("cargo", "test", "--locked", "--workspace", "--all-features", "--", "--test-threads=1")
+        run("cargo", "test", "--locked", "--workspace", "--all-features", "--no-fail-fast", "--", "--test-threads=1")
 
 
 if __name__ == "__main__":
