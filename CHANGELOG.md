@@ -339,8 +339,9 @@ correlated requests and completion should use a vendor's structured protocol.
 
 ### Known limitations
 
-- Windows is cross-compiled and linted only, never run on a Windows host; its foreground
-  answers are heuristic.
+- Windows runtime support remains unverified; native CI is configured and foreground
+  answers are heuristic. ConPTY can retain output after child completion; see the
+  [process-completion guidance](docs/pty-and-screen.md#events-and-receiver-backpressure).
 - macOS: `openpty` called from several threads at the same moment can fail
   (`openpty: … Unknown error: -6`); serialise concurrent spawns or retry.
 - Profiles match screen text: a reworded CLI release needs a profile update. OpenCode and
