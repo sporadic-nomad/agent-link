@@ -1278,7 +1278,7 @@ mod verified_receipts {
                 Visibility::Readable,
                 false,
                 Timing::default().submit_retry_max,
-                &["--submit-display-delay-ms", "1200"],
+                &["--hold-submit-display"],
             );
             let ticket = term.send("slow redraw", SendOptions { strict, ..submit() });
             assert_eq!(
@@ -1291,6 +1291,9 @@ mod verified_receipts {
                 "composer is still stale"
             );
             assert_eq!(count_rows(&term, "enter-received"), 1);
+            // Release only after observing the uncertain result: a fixed redraw delay
+            // races a test thread descheduled while the receipt deadline expires.
+            term.terminal().write(b"\x1b[B").unwrap();
             screen_contains(term.terminal(), "you: slow redraw", WAIT);
             assert_eq!(count_rows(&term, "you: slow redraw"), 1);
             assert_eq!(count_rows(&term, "enter-received"), 1);

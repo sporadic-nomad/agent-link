@@ -3,7 +3,8 @@
 //! library; only std plus the crate's platform dependencies.
 //!
 //! `agent-link-fake-agent <scene> [--sync] [--title] [--exit-on-input] [--reset-delay-ms N]
-//! [--reset-silence-ms N] [--dialog-after-ms N] [--swallow-ms N] [--keep-frame]` — an
+//! [--reset-silence-ms N] [--dialog-after-ms N] [--swallow-ms N] [--keep-frame]
+//! [--hold-submit-display]` — an
 //! unknown scene, flag or value prints the error, the usage and the scene list, and exits 2.
 //!
 //! Screen (rows 1-based, absolute cursor moves + erase-line, any terminal size):
@@ -39,6 +40,8 @@
 //!   `--record-enter`: show every Enter; `--ignore-enter`: keep its composer unchanged.
 //!   `--submit-display-delay-ms N`: accept each ordinary submit immediately but keep
 //!   the composer unchanged until its display delay; repeated Enters queue duplicates.
+//!   `--hold-submit-display`: additionally hold those updates until the test sends Down;
+//!   background titles continue, and releasing the display does not send another Enter.
 //!   `--sync`: every redraw inside DEC 2026 (`ESC[?2026h` … `ESC[?2026l`).
 //! - `--exit-on-input`: reads nothing; exits 0 (the normal exit) as soon as input is
 //!   pending, leaving it unread for the shell — an agent that leaves before reading a
@@ -87,7 +90,7 @@ use scenes::SCENES;
 /// Three lines, each under 80 columns.
 const USAGE: &str = "usage: agent-link-fake-agent <scene> [--sync] [--title] \
                      [--exit-on-input]\n       [--reset-delay-ms N] [--reset-silence-ms N] \
-                     [--dialog-after-ms N]\n       [--swallow-ms N] [--keep-frame]";
+                     [--dialog-after-ms N]\n       [--swallow-ms N] [--keep-frame] [--hold-submit-display]";
 const REPLY_AFTER: Duration = Duration::from_millis(300);
 const SPINNER_EVERY: Duration = Duration::from_millis(100);
 const PROGRESS_FOR: Duration = Duration::from_millis(400);
@@ -186,6 +189,7 @@ struct Opts {
     dialog_after: Duration,
     swallow: Duration,
     submit_display_delay: Duration,
+    hold_submit_display: bool,
 }
 
 impl Opts {
@@ -210,6 +214,7 @@ impl Opts {
             dialog_after: Duration::from_millis(1500),
             swallow: Duration::from_millis(100),
             submit_display_delay: Duration::ZERO,
+            hold_submit_display: false,
         };
         while let Some(flag) = args.next() {
             let slot = match flag.as_str() {
@@ -239,6 +244,10 @@ impl Opts {
                 }
                 "--keep-frame" => {
                     opts.keep_frame = true;
+                    continue;
+                }
+                "--hold-submit-display" => {
+                    opts.hold_submit_display = true;
                     continue;
                 }
                 "--reset-delay-ms" => &mut opts.reset_delay,
@@ -425,7 +434,10 @@ impl App {
             fresh_at,
             dialog_at,
             self.replies.front().copied(),
-            self.delayed_submits.front().map(|(at, _)| *at),
+            self.delayed_submits
+                .front()
+                .filter(|_| !self.opts.hold_submit_display)
+                .map(|(at, _)| *at),
             self.spinner.map(|(at, _)| at),
             self.progress_clear,
             self.background_title_at,
@@ -473,10 +485,11 @@ impl App {
                 self.draw();
             }
         }
-        while self
-            .delayed_submits
-            .front()
-            .is_some_and(|(at, _)| *at <= now)
+        while !self.opts.hold_submit_display
+            && self
+                .delayed_submits
+                .front()
+                .is_some_and(|(at, _)| *at <= now)
         {
             let (_, text) = self.delayed_submits.pop_front().expect("queued submit");
             self.show_submit(text, now);
@@ -551,6 +564,9 @@ impl App {
                     self.draw();
                 }
                 Key::Enter => self.enter(now),
+                Key::Down if self.opts.hold_submit_display => {
+                    self.opts.hold_submit_display = false;
+                }
                 _ => {}
             },
         }
@@ -609,7 +625,9 @@ impl App {
             self.draw();
             return;
         }
-        if !self.opts.submit_display_delay.is_zero() && text.trim() != "/new" {
+        if (self.opts.hold_submit_display || !self.opts.submit_display_delay.is_zero())
+            && text.trim() != "/new"
+        {
             self.delayed_submits
                 .push_back((now + self.opts.submit_display_delay, text));
             return;
