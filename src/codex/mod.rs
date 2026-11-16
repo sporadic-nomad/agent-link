@@ -8,6 +8,11 @@
 //! Failed write receipts stop further dispatch while preceding native frames drain to
 //! the ordered transport EOF/error. Request/approval deadlines and event limits still
 //! apply during draining; receipts cannot replace an on-time native response.
+//! Once input closure is observed, new ordinary/control requests return
+//! `Transport(crate::Error::Closed)` and approval replies return `StaleApproval`
+//! without consuming their tokens. This is input-only: `snapshot().failure` stays
+//! unset while incoming native responses/events drain. Existing absolute request
+//! and approval deadlines still apply; automatic replies are skipped when unsendable.
 //! Host JSON receives a bounded structural check before controller locking so
 //! cleanup of oversized input cannot hold the lock and delay shutdown.
 //! Events pair [`crate::portable::EventV1`] with an optional native envelope (retained
@@ -90,6 +95,8 @@ struct PendingApproval {
 #[derive(Default)]
 struct State {
     snapshot: Snapshot,
+    // Sticky input-only closure; incoming native frames remain authoritative.
+    input_closed: bool,
     // One root sample for the observed active turn, independent of arrival-ordered
     // last_usage. Cleared on matching completion; this is not a per-turn history.
     active_usage: Option<UsageObservation>,
@@ -353,6 +360,9 @@ impl CodexAppServer {
         if let Some(failure) = &state.snapshot.failure {
             return Err(CodexError::Closed(failure.clone()));
         }
+        if state.input_closed {
+            return Err(Error::Closed.into());
+        }
         let method = match &action {
             Action::Initialize => {
                 if state.snapshot.initialized || state.initialized_pending {
@@ -603,6 +613,9 @@ impl Shared {
         control: bool,
         reserve_reply: bool,
     ) -> crate::Result<()> {
+        if state.input_closed {
+            return Err(Error::Closed);
+        }
         let (max_count, max_bytes) = if control {
             (
                 self.limits.control_capacity - usize::from(reserve_reply),
@@ -625,6 +638,13 @@ impl Shared {
         value: Value,
         reply: Option<Arc<Completion<ReplyOutcome>>>,
     ) -> Result<(), Failure> {
+        // Automatic protocol replies cannot be delivered after input closes. Keep
+        // draining instead of converting input closure into terminal overload.
+        // Approval replies check closure under this same mutex before calling here,
+        // so this skip cannot return a successful ticket for an unsent host reply.
+        if state.input_closed {
+            return Ok(());
+        }
         let line = encode(&value, self.limits.max_frame_bytes).map_err(|_| Failure::Overloaded)?;
         let bytes = line.len() + 1;
         self.admit(state, bytes, true, false)
@@ -709,7 +729,7 @@ impl Shared {
 fn approval_reply(token: &Approval, decision: Value) -> Result<ReplyTicket, CodexError> {
     let shared = token.shared.upgrade().ok_or(CodexError::StaleApproval)?;
     let mut state = lock(&shared.state);
-    if state.snapshot.failure.is_some() {
+    if state.snapshot.failure.is_some() || state.input_closed {
         return Err(CodexError::StaleApproval);
     }
     let approval = &state

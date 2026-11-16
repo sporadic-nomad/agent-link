@@ -31,6 +31,17 @@ pub(super) fn run(scene: &str) {
                 if scene == "silent" {
                     continue;
                 }
+                if scene == "large" {
+                    let text = value["message"]["content"].as_str().unwrap();
+                    assert_eq!(text.len(), 6 * 1024 * 1024);
+                    emit(
+                        json!({"type":"assistant","message":{"id":"large","content":[{"type":"text","text":text}]}}),
+                    );
+                    let mut approval = fixtures["approval"].clone();
+                    approval["request"]["input"]["file_path"] = json!(text);
+                    emit(approval);
+                    continue;
+                }
                 let mut result = fixtures["result"].clone();
                 result["user_message_uuids"][0] = value["uuid"].clone();
                 if scene == "failed-result" {

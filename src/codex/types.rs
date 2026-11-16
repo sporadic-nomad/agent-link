@@ -35,30 +35,31 @@ pub struct CodexOptions {
 }
 
 /// Finite adapter budgets, separate from the underlying transport's limits.
+/// Defaults are library resource policy, not vendor protocol maxima.
 /// Byte budgets count serialized frames and extracted strings, with parsed JSON
 /// bounded by frame size and serde_json's recursion limit. Host-retained events,
 /// results and capability metadata are host-owned memory.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct CodexLimits {
-    /// Maximum incoming/outgoing frame including newline. Default: 1 MiB.
+    /// Maximum incoming/outgoing frame including newline. Default: 8 MiB.
     pub max_frame_bytes: usize,
     /// Ordinary requests awaiting a response or write completion. Default: 32.
     pub pending_requests: usize,
-    /// Serialized ordinary requests retained through response and write completion. Default: 4 MiB.
+    /// Serialized ordinary requests retained through response and write completion. Default: 32 MiB.
     pub pending_bytes: usize,
     /// Reserved control operations (interrupts, replies and notifications). Default: 8.
     pub control_capacity: usize,
-    /// Separate serialized control budget. Default: 2 MiB.
+    /// Separate serialized control budget. Default: 32 MiB.
     pub control_bytes: usize,
     /// Pending host approvals. Default: 16.
     pub approvals: usize,
-    /// Pending approval frame bytes plus extracted origin strings. Default: 2 MiB.
+    /// Pending approval frame bytes plus extracted origin strings. Default: 16 MiB.
     pub approval_bytes: usize,
     /// Unread host events. Default: 64.
     pub events: usize,
     /// Unread frame bytes plus projection strings and attached approval data, even
-    /// when native envelopes are omitted. Fixed overhead is bounded by events. Default: 4 MiB.
+    /// when native envelopes are omitted. Fixed overhead is bounded by events. Default: 32 MiB.
     pub event_bytes: usize,
     /// Time allowed for a host approval, measured from ingress. Default: 5 minutes.
     pub approval_timeout: Duration,
@@ -69,15 +70,15 @@ pub struct CodexLimits {
 impl Default for CodexLimits {
     fn default() -> Self {
         Self {
-            max_frame_bytes: 1024 * 1024,
+            max_frame_bytes: 8 * 1024 * 1024,
             pending_requests: 32,
-            pending_bytes: 4 * 1024 * 1024,
+            pending_bytes: 32 * 1024 * 1024,
             control_capacity: 8,
-            control_bytes: 2 * 1024 * 1024,
+            control_bytes: 32 * 1024 * 1024,
             approvals: 16,
-            approval_bytes: 2 * 1024 * 1024,
+            approval_bytes: 16 * 1024 * 1024,
             events: 64,
-            event_bytes: 4 * 1024 * 1024,
+            event_bytes: 32 * 1024 * 1024,
             approval_timeout: Duration::from_secs(300),
             control_timeout: Duration::from_secs(10),
         }
@@ -124,6 +125,8 @@ pub enum Failure {
 #[non_exhaustive]
 pub enum CodexError {
     /// Spawn, transport preflight, or host input validation failed.
+    /// `crate::Error::Closed` also refuses new requests after observed input closure
+    /// while the adapter can still drain native output without a terminal failure.
     #[error(transparent)]
     Transport(#[from] crate::Error),
     /// Adapter is terminal.
@@ -139,6 +142,7 @@ pub enum CodexError {
     #[error("Codex active turn does not match")]
     TurnMismatch,
     /// The token was answered, cancelled, expired or belongs to a closed connection.
+    /// Observed input-only closure also refuses replies without consuming the token.
     #[error("Codex approval is no longer pending")]
     StaleApproval,
     /// An unoffered decision was refused and the connection closed without approving.
@@ -354,8 +358,10 @@ impl Approval {
     /// Answers with a native decision: accept, acceptForSession, decline, cancel,
     /// or an exact offered amendment object. An invalid choice closes the connection
     /// without granting permission. Return value observes only writing the reply.
-    /// Expired tokens return [`CodexError::StaleApproval`] and terminate the connection
-    /// with [`Failure::ApprovalExpired`], even if dispatcher maintenance has not run.
+    /// While input remains open, expired tokens return [`CodexError::StaleApproval`]
+    /// and terminate the connection with [`Failure::ApprovalExpired`], even if
+    /// dispatcher maintenance has not run. Observed input closure instead refuses
+    /// the reply as stale without consuming its token or changing terminal state.
     pub fn respond(&self, decision: Value) -> Result<ReplyTicket, CodexError> {
         super::approval_reply(self, decision)
     }

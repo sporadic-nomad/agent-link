@@ -299,6 +299,95 @@ mod unix {
     }
 
     #[test]
+    fn unavailable_host_cwd_is_untested_and_absolute_cwd_can_recover() {
+        use agent_link::probe::*;
+        const CHILD_ROOT: &str = "AGENT_LINK_TEST_UNAVAILABLE_CWD_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            // This branch runs only in a dedicated subprocess, never in the parent's
+            // test runner: deleting its cwd reproduces a real current_dir failure.
+            let root = std::path::PathBuf::from(root);
+            let removed = root.join("removed");
+            std::fs::create_dir(&removed).unwrap();
+            let marker = root.join("launcher-ran");
+            let bin = stub(
+                &root,
+                "fake-version",
+                &format!("echo ran >> {}; exit 0", word(marker.to_str().unwrap())),
+            );
+            let profiles: Vec<Arc<dyn AgentProfile>> = vec![Arc::new(Stubbed {
+                id: "cwd",
+                launchers: launchers(vec![bin]),
+                check: None,
+            })];
+            std::env::set_current_dir(&removed).unwrap();
+            std::fs::remove_dir(&removed).unwrap();
+            assert!(std::env::current_dir().is_err());
+            let env = EnvPolicy {
+                inherit: false,
+                ..EnvPolicy::default()
+            };
+            let mut options = ProbeOptions::default();
+            options.mode = ProbeMode::Direct;
+            options.timeout = Duration::from_secs(2);
+            for cwd in [None, Some("relative".into())] {
+                options.cwd = cwd;
+                let report = probe_agents_detailed(&profiles, &env, &options)
+                    .remove("cwd")
+                    .unwrap();
+                assert_eq!(report.readiness, RuntimeReadiness::Untested);
+                assert_eq!(report.result, result(false, None));
+                assert_eq!(report.cwd, None);
+                assert_eq!(
+                    report.diagnostics,
+                    [ContextDiagnostic::WorkingDirectoryUnavailable]
+                );
+                assert!(report.observations.is_empty());
+            }
+            assert_eq!(
+                probe_agents(&profiles, &env, options.timeout)["cwd"],
+                result(false, None)
+            );
+            assert!(
+                !marker.exists(),
+                "an untested context must not run the launcher"
+            );
+            options.cwd = Some(root.clone());
+            let report = probe_agents_detailed(&profiles, &env, &options)
+                .remove("cwd")
+                .unwrap();
+            assert_eq!(report.readiness, RuntimeReadiness::Available);
+            assert_eq!(report.result, result(true, None));
+            assert_eq!(report.observations.len(), 1);
+            assert!(report.diagnostics.is_empty());
+            assert_eq!(std::fs::read_to_string(marker).unwrap(), "ran\n");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::unavailable_host_cwd_is_untested_and_absolute_cwd_can_recover",
+                "--nocapture",
+            ])
+            .env(CHILD_ROOT, root.path())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "cwd probe subprocess failed: {status}");
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("cwd probe subprocess exceeded its deadline");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
     fn detailed_probe_matches_environment_cwd_and_retains_future_version() {
         use agent_link::probe::*;
         logger::install();

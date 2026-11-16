@@ -78,7 +78,7 @@ cargo run -p agent-link --example capture --features screen -- \
 ## Troubleshooting
 
 ### Session freezes / stops producing output
-- **Likely cause:** An unconsumed `Receiver<Event>` (or `EventStream` / `Receiver<RpcEvent>`) reached capacity (1,024 for PTY, 64 default for RPC).
+- **Likely cause:** An unconsumed `Receiver<Event>` (or `EventStream` / `Receiver<RpcEvent>`) reached capacity (1,024 for PTY, 8 default for RPC).
 - **Fix:** Ensure every receiver returned by `spawn`, `subscribe`, `attach`, or `attach_recovery` is continuously drained in its own thread/task, or explicitly `drop()`ped if unused. Never `.await` `send_async()` / `Ticket::outcome()` on the same task that drains `EventStream`.
 
 ### `Error::Spawn("openpty: ... Unknown error: -6")` on macOS

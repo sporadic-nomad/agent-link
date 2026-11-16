@@ -406,17 +406,36 @@ fn uncertain_write_preserves_native_response_until_ordered_eof() {
         let p = s.pending.back_mut().unwrap();
         p.dispatched = true;
         p.receipt = Some(crate::rpc::RpcWriteReceipt::finished_for_test(
-            RpcWriteOutcome::PossiblyWritten(crate::rpc::RpcWriteFailure::Closed),
+            RpcWriteOutcome::PossiblyWritten(crate::rpc::RpcWriteFailure::Io(
+                std::io::ErrorKind::BrokenPipe,
+            )),
         ));
     }
-    let mut draining = false;
-    maintenance(&app.shared, &mut draining).unwrap();
-    assert!(draining);
-    input(
-        &app,
-        json!({"jsonrpc":"2.0","id":prompt.id(),"result":{"stopReason":"end_turn"}}),
+    let (tx, incoming) = bounded(3);
+    tx.send(RpcEvent::StdinError {
+        id: app.generation(),
+        kind: std::io::ErrorKind::BrokenPipe,
+    })
+    .unwrap();
+    tx.send(RpcEvent::Line {
+        id: app.generation(),
+        seq: 7,
+        line: json!({"jsonrpc":"2.0","id":prompt.id(),"result":{"stopReason":"end_turn"}})
+            .to_string(),
+    })
+    .unwrap();
+    tx.send(RpcEvent::Exit {
+        id: app.generation(),
+        stderr_tail: String::new(),
+    })
+    .unwrap();
+    run_loop(
+        Arc::clone(&app.shared),
+        incoming,
+        crossbeam_channel::never(),
+        |_, _| panic!("failed stdin must not dispatch again"),
     );
-    app.shared.stop(Failure::Eof);
+    assert_eq!(app.failure(), Some(Failure::Eof));
     assert!(matches!(
         &*prompt.outcome().unwrap(),
         RequestOutcome::Response(_)
@@ -667,4 +686,167 @@ fn approval_callback_ticket_cancellation_discards_late_allow_without_consuming_t
             .any(|p| matches!(p.action, Action::Control))
     );
     assert!(clone.select("no").is_ok());
+}
+
+#[test]
+fn input_closure_refuses_host_admissions_without_truncating_native_output() {
+    use crate::rpc::{RpcWriteFailure, RpcWriteReceipt};
+    // Event notification, immediate failed receipt, refused send, later receipt observation.
+    for source in 0..4 {
+        let (app, events) = ready(AcpLimits::default());
+        let ticket = app.prompt("x", deadline()).unwrap();
+        let token = permission(&app, &events, json!(77));
+        if source == 2 {
+            {
+                let mut state = lock(&app.shared.state);
+                let pending = state.pending.back_mut().unwrap();
+                pending.dispatched = true;
+                pending.receipt =
+                    Some(RpcWriteReceipt::finished_for_test(RpcWriteOutcome::Written));
+            }
+            input(
+                &app,
+                json!({"jsonrpc":"2.0","id":66,"method":"unsupported/earlier","params":{}}),
+            );
+            events.recv_until(deadline()).unwrap();
+        }
+        if source == 3 {
+            let mut state = lock(&app.shared.state);
+            let pending = state.pending.back_mut().unwrap();
+            pending.dispatched = true;
+            pending.receipt = Some(RpcWriteReceipt::finished_for_test(
+                RpcWriteOutcome::PossiblyWritten(RpcWriteFailure::Closed),
+            ));
+        }
+        let (tx, incoming) = bounded(8);
+        if source == 0 {
+            tx.send(RpcEvent::StdinError {
+                id: app.generation(),
+                kind: std::io::ErrorKind::BrokenPipe,
+            })
+            .unwrap();
+        }
+        tx.send(RpcEvent::Line { id: app.generation(), seq: 100,
+            line: json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"future_update"}}}).to_string() }).unwrap();
+        std::thread::scope(|scope| {
+            let app = &app;
+            let ticket = &ticket;
+            scope.spawn(move || {
+                assert_eq!(
+                    events.recv_until(deadline()).unwrap().portable.context.seq,
+                    100
+                );
+                assert!(app.failure().is_none());
+                let before = {
+                    let state = lock(&app.shared.state);
+                    (state.next, state.pending.iter().map(|p| (p.deadline, p.bytes)).collect::<Vec<_>>(), state.permissions.len())
+                };
+                assert!(matches!(
+                    app.cancel(deadline()),
+                    Err(AcpError::Transport(Error::Closed))
+                ));
+                assert!(matches!(
+                    app.prompt("later", deadline()),
+                    Err(AcpError::Transport(Error::Closed))
+                ));
+                assert!(matches!(token.select("yes"), Err(AcpError::StaleApproval)));
+                assert!(matches!(token.cancel(), Err(AcpError::StaleApproval)));
+                {
+                    let state = lock(&app.shared.state);
+                    assert_eq!(
+                        (state.next, state.pending.iter().map(|p| (p.deadline, p.bytes)).collect::<Vec<_>>(), state.permissions.len()),
+                        before
+                    );
+                }
+                tx.send(RpcEvent::Line { id: app.generation(), seq: 101,
+                    line: json!({"jsonrpc":"2.0","id":78,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"late"},"options":[{"optionId":"yes"}]}}).to_string() }).unwrap();
+                let late = events.recv_until(deadline()).unwrap().permission.unwrap();
+                let retained = lock(&app.shared.state).permissions.len();
+                assert!(matches!(late.select("yes"), Err(AcpError::StaleApproval)));
+                assert_eq!(lock(&app.shared.state).permissions.len(), retained);
+                tx.send(RpcEvent::Line {
+                    id: app.generation(),
+                    seq: 102,
+                    line:
+                        json!({"jsonrpc":"2.0","id":88,"method":"unsupported/reverse","params":{}})
+                            .to_string(),
+                })
+                .unwrap();
+                tx.send(RpcEvent::Line {
+                    id: app.generation(),
+                    seq: 103,
+                    line:
+                        json!({"jsonrpc":"2.0","id":ticket.id(),"result":{"stopReason":"end_turn"}})
+                            .to_string(),
+                })
+                .unwrap();
+                let outcome = ticket.wait_until(deadline()).unwrap();
+                assert!(
+                    matches!(&*outcome, RequestOutcome::Response(_)),
+                    "source {source}: {outcome:?}"
+                );
+                assert!(app.failure().is_none());
+                assert!(matches!(app.prompt("after completion", deadline()), Err(AcpError::Transport(Error::Closed))));
+                assert!(lock(&app.shared.state).pending.iter().filter(|p| p.control).count() <= usize::from(source == 2), "draining must not enqueue automatic controls");
+                assert!(
+                    lock(&app.shared.state).permissions.is_empty(),
+                    "prompt completion revokes permission without unsendable cancellation"
+                );
+                tx.send(RpcEvent::Exit {
+                    id: app.generation(),
+                    stderr_tail: String::new(),
+                })
+                .unwrap();
+            });
+            run_loop(
+                Arc::clone(&app.shared),
+                incoming,
+                crossbeam_channel::never(),
+                |_, _| match source {
+                    0 => Ok(RpcWriteReceipt::finished_for_test(RpcWriteOutcome::Written)),
+                    1 => Ok(RpcWriteReceipt::finished_for_test(
+                        RpcWriteOutcome::PossiblyWritten(RpcWriteFailure::Closed),
+                    )),
+                    2 => Err(Error::Closed),
+                    _ => panic!("maintenance must stop dispatch"),
+                },
+            );
+        });
+        assert_eq!(app.failure(), Some(Failure::Eof));
+    }
+}
+
+#[test]
+fn input_closure_keeps_original_request_deadline() {
+    let (app, _) = ready(AcpLimits::default());
+    let ticket = app.prompt("x", deadline()).unwrap();
+    {
+        let mut state = lock(&app.shared.state);
+        let pending = state.pending.back_mut().unwrap();
+        pending.dispatched = true;
+        pending.receipt = Some(crate::rpc::RpcWriteReceipt::finished_for_test(
+            RpcWriteOutcome::PossiblyWritten(crate::rpc::RpcWriteFailure::Closed),
+        ));
+    }
+    let mut draining = false;
+    maintenance(&app.shared, &mut draining).unwrap();
+    assert!(draining);
+    assert!(app.failure().is_none());
+    assert!(matches!(
+        app.cancel(deadline()),
+        Err(AcpError::Transport(Error::Closed))
+    ));
+    lock(&app.shared.state).pending.back_mut().unwrap().deadline = Instant::now();
+    assert_eq!(
+        maintenance(&app.shared, &mut draining),
+        Err(Failure::DeadlineExceeded)
+    );
+    app.shared.stop(Failure::DeadlineExceeded);
+    assert!(matches!(
+        &*ticket.outcome().unwrap(),
+        RequestOutcome::OutcomeUnknown {
+            failure: Failure::DeadlineExceeded,
+            ..
+        }
+    ));
 }

@@ -4,6 +4,37 @@ Notable changes to `agent-link`, in the [Keep a Changelog](https://keepachangelo
 format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html); before
 1.0 a minor version may break the API.
 
+## [Unreleased]
+
+## [0.1.1] — 2026-11-17
+
+### Changed
+
+- Codex/ACP now refuse new requests and approval replies after observed input closure,
+  without consuming approval tokens or admitting undeliverable controls. Native output
+  continues draining with existing deadlines; input closure alone is not terminal.
+- RPC stdin I/O failures now emit nonterminal `RpcEvent::StdinError { id, kind }`:
+  pending receipts settle and further input is refused, while output continues toward
+  `Exit`. Handle `StdinError` to observe input failures. Terminal `Error` still replaces
+  `Exit`; exit codes remain available separately through `try_wait()`.
+- Oversized stderr lines now produce a bounded drop marker and resume at the next
+  line instead of stopping RPC. Oversized stdout and genuine read failures remain terminal.
+- RPC stdin/stdout frame defaults increase from 1 to 8 MiB, pending stdin from 4 to
+  32 MiB, and event capacity decreases from 64 to 8, preserving the 64 MiB raw queued
+  stdout allowance (lossy UTF-8 can expand up to 3×, plus the reader frame). Codex and
+  Claude frame defaults increase to 8 MiB, with pending/control/event byte budgets
+  of 32 MiB and approval bytes of 16 MiB; item counts and ACP frame limits are unchanged.
+  Hosts needing earlier bounds should set limits explicitly and review companion budgets.
+- Added `RpcSpawnSpec::trace_stderr` (default `false`) for stderr-only logging. Full
+  struct literals must add this field; prefer constructors and field assignment.
+  Full `trace` still enables payload, argument and stderr logging; either stderr opt-in
+  may expose sensitive diagnostics.
+- Clarified async bridge capacity and disconnection contracts: PTY `Exit` does not end
+  the stream; RPC terminal `Exit` or `Error` does. An unbounded source remains unbounded.
+- An unavailable host working directory yields detailed probe readiness `Untested`
+  with `WorkingDirectoryUnavailable`; the legacy false installation result is inconclusive.
+  These changes have offline regression coverage, not new live vendor validation.
+
 ## [0.1.0] — 2026-11-16
 
 The first release.

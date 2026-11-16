@@ -46,10 +46,81 @@ pub(super) fn read_frame(
     }
 }
 
+/// Discards the unread remainder of a line without retaining bytes. Returns false when
+/// cancellation wins between chunks; a blocking read still waits for pipe progress.
+pub(super) fn discard_line(
+    reader: &mut impl BufRead,
+    stopped: impl Fn() -> bool,
+) -> Result<bool, ReadError> {
+    loop {
+        if stopped() {
+            return Ok(false);
+        }
+        let available = match reader.fill_buf() {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(ReadError::Io(err.kind())),
+        };
+        if available.is_empty() {
+            return Ok(true);
+        }
+        let newline = available.iter().position(|&byte| byte == b'\n');
+        let count = newline.map_or(available.len(), |index| index + 1);
+        reader.consume(count);
+        if newline.is_some() {
+            return Ok(true);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{BufReader, Cursor};
+
+    #[test]
+    fn discarding_oversized_lines_recovers_at_newline_or_eof() {
+        for capacity in [1, 2, 64] {
+            for raw in [&b"abcdef\r\nnext\n"[..], &b"abcdef"[..]] {
+                let mut reader = BufReader::with_capacity(capacity, Cursor::new(raw));
+                let mut buf = Vec::new();
+                assert!(matches!(
+                    read_frame(&mut reader, &mut buf, 5),
+                    Err(ReadError::TooLong)
+                ));
+                buf.clear();
+                assert!(matches!(discard_line(&mut reader, || false), Ok(true)));
+                assert!(buf.capacity() <= 5);
+                let expected = if raw.ends_with(b"next\n") {
+                    &b"next\n"[..]
+                } else {
+                    &b""[..]
+                };
+                assert_eq!(
+                    read_frame(&mut reader, &mut buf, 5).ok(),
+                    Some(expected.len())
+                );
+                assert_eq!(buf, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn discard_checks_cancellation_between_chunks() {
+        let mut reader = BufReader::with_capacity(2, Cursor::new(b"abcdef\nnext"));
+        let calls = std::cell::Cell::new(0);
+        assert!(matches!(
+            discard_line(&mut reader, || {
+                calls.set(calls.get() + 1);
+                calls.get() > 2
+            }),
+            Ok(false)
+        ));
+        assert_eq!(reader.buffer(), b"");
+        let mut remaining = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut remaining).unwrap();
+        assert_eq!(remaining, "ef\nnext");
+    }
 
     #[test]
     fn bounded_frames_cover_crlf_eof_and_delimiter_boundaries() {
@@ -105,5 +176,9 @@ mod tests {
             Err(ReadError::Io(io::ErrorKind::Other))
         ));
         assert!(buf.is_empty());
+        assert!(matches!(
+            discard_line(&mut reader, || false),
+            Err(ReadError::Io(io::ErrorKind::Other))
+        ));
     }
 }

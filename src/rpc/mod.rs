@@ -7,6 +7,7 @@
 //!   launcher resolved on the child's `PATH`, with no console window — and returns the
 //!   handle plus an [`RpcEvent`] receiver: one `Line` per stdout line (with `seq`), then an
 //!   `Exit` with the stderr tail on normal EOF, or a terminal `Error` on transport failure.
+//!   Stdin I/O failures emit nonterminal `StdinError` and leave output draining.
 //! - [`RpcChild::send_line`] queues one line for stdin (`\n` appended by the writer),
 //!   refusing oversized input or a full queue without waiting on the child.
 //! - [`RpcChild::send_line_tracked`] adds bounded write receipts with absolute deadlines.
@@ -26,7 +27,8 @@
 //! deadlines, independent of blocked pipes); untracked-only children have no deadline
 //! thread. The worker is reused until input closes or the transport stops.
 //! [`RpcLimits`] bounds frames and queues. Log lines carry `[<log_tag>:<log_key>]`;
-//! payloads, stderr and command arguments are logged only with explicit `trace: true`.
+//! payloads and command arguments are logged only with explicit `trace: true`. Stderr
+//! additionally supports the independent `trace_stderr: true` opt-in.
 //! Built-in profile launches default to YOLO/unattended permissions. Use
 //! [`AgentProfile::rpc_launch_with_options`](crate::agent::AgentProfile::rpc_launch_with_options)
 //! to select native/custom policy before spawning. The transport does not parse or answer
@@ -87,6 +89,9 @@ use crate::pty::SessionId;
 /// Memory limits for one RPC transport. Frame sizes count bytes, including CR/LF
 /// delimiters when present. Limits must be nonzero; rejected input is never queued.
 ///
+/// Defaults are library resource policy, not vendor protocol maxima. The default
+/// output queue holds eight frames (64 MiB raw stdout bytes); lossy UTF-8 can
+/// expand queued strings to 192 MiB, excluding the reader frame and metadata.
 /// The input budget includes the line currently being written. Output is bounded by
 /// `event_capacity` frames, each at most `max_stdout_line_bytes` raw bytes (invalid
 /// UTF-8 replacement can expand the string to at most three times that size), plus one
@@ -95,29 +100,32 @@ use crate::pty::SessionId;
 /// 4 KiB diagnostic tail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RpcLimits {
-    /// Maximum raw stdout frame, including its newline. Default: 1 MiB.
+    /// Maximum raw stdout frame, including its newline. Default: 8 MiB.
     pub max_stdout_line_bytes: usize,
     /// Maximum raw stderr frame, including its newline. Default: 64 KiB.
+    /// Larger diagnostic lines are discarded through newline or EOF and replaced
+    /// with `[agent-link: oversized stderr line dropped]` in the bounded exit tail.
+    /// This does not stop stdout or stdin.
     pub max_stderr_line_bytes: usize,
-    /// Maximum stdin frame, including the newline added by `send_line`. Default: 1 MiB.
+    /// Maximum stdin frame, including the newline added by `send_line`. Default: 8 MiB.
     pub max_stdin_line_bytes: usize,
-    /// Bytes admitted to stdin but not yet completely written. Default: 4 MiB.
+    /// Bytes admitted to stdin but not yet completely written. Default: 32 MiB.
     pub max_pending_stdin_bytes: usize,
     /// Lines admitted to stdin but not yet completely written. Default: 1,024.
     pub max_pending_stdin_lines: usize,
-    /// Maximum number of pending output events. Default: 64.
+    /// Maximum number of pending output events. Default: 8.
     pub event_capacity: usize,
 }
 
 impl Default for RpcLimits {
     fn default() -> Self {
         Self {
-            max_stdout_line_bytes: 1024 * 1024,
+            max_stdout_line_bytes: 8 * 1024 * 1024,
             max_stderr_line_bytes: 64 * 1024,
-            max_stdin_line_bytes: 1024 * 1024,
-            max_pending_stdin_bytes: 4 * 1024 * 1024,
+            max_stdin_line_bytes: 8 * 1024 * 1024,
+            max_pending_stdin_bytes: 32 * 1024 * 1024,
             max_pending_stdin_lines: 1024,
-            event_capacity: 64,
+            event_capacity: 8,
         }
     }
 }
@@ -174,7 +182,7 @@ pub enum RpcStream {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RpcTransportError {
-    /// A frame exceeded its configured byte limit; it was not delivered or truncated.
+    /// A stdout frame exceeded its configured byte limit; it was not delivered or truncated.
     #[error("RPC {stream:?} frame exceeds the {limit}-byte limit")]
     LineTooLong {
         /// Pipe that produced the oversized frame.
@@ -232,8 +240,15 @@ pub struct RpcSpawnSpec {
     pub log_key: String,
     /// Explicitly opts in to logging payloads, stderr and launch arguments (cut to 400
     /// characters). These may contain credentials or private prompts. Default `false`:
-    /// logs contain lifecycle metadata only; stderr remains available in the exit event.
+    /// logs contain lifecycle metadata only unless `trace_stderr` is enabled. Stderr
+    /// remains available in the exit event regardless of either trace setting.
     pub trace: bool,
+    /// Independently opts in to logging stderr at warning level, cut to 400 characters.
+    /// Stderr may contain credentials or private prompts. Default `false`. Setting
+    /// `trace` to `true` also logs stderr, regardless of this setting. This does not
+    /// enable logging of launch arguments or stdin/stdout payloads, or affect the
+    /// bounded stderr tail retained in exit events.
+    pub trace_stderr: bool,
     /// Finite frame and queue limits, validated before the child starts.
     pub limits: RpcLimits,
     /// Stdout decoding policy. Default: lossily replace invalid UTF-8.
@@ -253,6 +268,7 @@ impl RpcSpawnSpec {
             log_tag: "agent-rpc".into(),
             log_key,
             trace: false,
+            trace_stderr: false,
             limits: RpcLimits::default(),
             stdout_utf8: RpcUtf8Mode::default(),
         }
@@ -273,9 +289,22 @@ pub enum RpcEvent {
         /// The line.
         line: String,
     },
+    /// Stdin failed and is closed; stdout and stderr continue draining. Nonterminal:
+    /// subsequent stdout lines and the final `Exit` or terminal `Error` can follow.
+    /// Active write receipts are already settled as possibly written and queued writes
+    /// as not written; new sends return `Closed`. A child can remain alive indefinitely
+    /// after closing stdin; use host deadlines or kill/drop to bound its lifetime.
+    /// Concurrent output termination or teardown can suppress this notification.
+    StdinError {
+        /// The child.
+        id: SessionId,
+        /// I/O failure category, without payload content.
+        kind: std::io::ErrorKind,
+    },
     /// The transport failed. The last event: no `Exit` follows, and `send_line` returns
     /// `Closed`. The process may still be running; drop or kill its handle to terminate it.
-    /// An oversized frame is never emitted as a partial `Line` or stderr tail entry.
+    /// Oversized stdout is never emitted as a partial `Line`. Oversized stderr is
+    /// discarded with a marker in the bounded exit tail and is not a transport error.
     Error {
         /// The child.
         id: SessionId,
@@ -283,7 +312,9 @@ pub enum RpcEvent {
         error: RpcTransportError,
     },
     /// stdout ended while the child was not being torn down: it exited (or closed its
-    /// stdout) on its own. The last event; never sent once teardown started, so a kill is
+    /// stdout) on its own, without a terminal transport failure. Such a failure sends
+    /// [`RpcEvent::Error`] instead. A preceding [`RpcEvent::StdinError`] permits this exit.
+    /// The last event; never sent once teardown started, so a kill is
     /// never reported as an exit. [`RpcChild::try_wait`] has the exit code (stdout can end
     /// a moment before the exit is visible).
     Exit {
@@ -298,7 +329,10 @@ impl RpcEvent {
     /// The child the event belongs to.
     pub fn id(&self) -> SessionId {
         match self {
-            Self::Line { id, .. } | Self::Exit { id, .. } | Self::Error { id, .. } => *id,
+            Self::Line { id, .. }
+            | Self::Exit { id, .. }
+            | Self::Error { id, .. }
+            | Self::StdinError { id, .. } => *id,
         }
     }
 }
@@ -464,6 +498,8 @@ impl RpcChild {
     /// [`Error::Closed`] after stdin half-close, teardown, EOF or a transport failure.
     /// No input is queued on an error, and admission never waits for the child to read.
     /// Once input is closed, `Closed` takes precedence over input validation errors.
+    /// A later stdin I/O failure emits nonterminal [`RpcEvent::StdinError`] while output
+    /// continues draining; use tracked writes for authoritative per-write outcomes.
     ///
     /// unix: a write to the stdin of a child that is gone raises `SIGPIPE`, and the write
     /// fails only while the host process ignores that signal — a Rust `main` does by
@@ -594,6 +630,7 @@ fn start_threads(
         tag: tag.into(),
         publisher: Arc::clone(publisher),
         trace: spec.trace,
+        trace_stderr: spec.trace || spec.trace_stderr,
         limits: spec.limits,
         stdout_utf8: spec.stdout_utf8,
     };

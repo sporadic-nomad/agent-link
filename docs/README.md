@@ -6,7 +6,7 @@ no UI or host-framework dependency: your application owns rendering and UX while
 manages child lifecycles, bounded event streams, startup steering, verified message delivery
 and protocol framing.
 
-> **Version:** `0.1.0` · **Edition:** Rust 2024 · **MSRV:** 1.85 · **License:** MIT
+> **Version:** `0.1.1` · **Edition:** Rust 2024 · **MSRV:** 1.85 · **License:** MIT
 
 Only **macOS** has verified native runtime results. Linux and Windows runtime support
 remains unverified; see [platform evidence](../README.md#platforms). The built-in Cursor
@@ -76,7 +76,7 @@ agent-link = { path = "../agent-link" }
 
 These contracts guide host integration:
 
-1. **Bounded memory and backpressure.** PTY event channels hold 1,024 events (16 for receivers attached after `Exit`); RPC receivers default to 64. Leaving a receiver alive without draining it stalls output reading for that session. Drop unused receivers immediately.
+1. **Bounded memory and backpressure.** PTY event channels hold 1,024 events (16 for receivers attached after `Exit`); RPC receivers default to 8. Leaving a receiver alive without draining it stalls output reading for that session. Drop unused receivers immediately.
 2. **Queued input, synchronous teardown.** `write`, `send`, and `send_line` enqueue bounded work without waiting for child writes. Dropping or calling `kill()` tears down the child process group (Unix) or Job Object / process tree (Windows), with a ~2 s direct-child reap wait. This is not a deadline for every host call: file logging performs synchronous I/O under the recovery lock and can delay attachment, resize, and teardown. Drop handles outside your own locks, and use `kill_async()` in async code.
 3. **Tickets are authoritative; events are best effort at shutdown.** Always retain and inspect `Ticket` / `RequestTicket` / `RpcWriteReceipt` outcomes. On shutdown, outstanding tickets settle immediately while final events are omitted if a receiver is full.
 4. **YOLO / unattended permissions by default.** Built-in PTY and RPC profile launches pass unattended flags (and disable Codex's sandbox) unless you configure `Permissions::AgentDefault` or `Permissions::Custom`. Folder trust (`TrustPolicy`) defaults to *off* (user answers dialogs).

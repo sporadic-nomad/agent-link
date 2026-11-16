@@ -157,3 +157,33 @@ fn approval_callbacks_delegation_panic_invalid_input_and_stale_clones_use_real_p
     }
     session.close();
 }
+
+#[test]
+fn default_budgets_deliver_large_text_and_permission_envelopes() {
+    for retention in [NativeEvents::Retain, NativeEvents::Omit] {
+        let (_temp, session, events) = spawn("large", retention);
+        let payload = "x".repeat(6 * 1024 * 1024);
+        let sent = session.send(&payload, Some("large"), deadline()).unwrap();
+        let event = events.recv_until(deadline()).unwrap();
+        assert!(
+            matches!(event.portable.kind, EventKind::Text { ref text, .. } if text == &payload)
+        );
+        assert_eq!(event.native.is_some(), retention == NativeEvents::Retain);
+        let approval = events.recv_until(deadline()).unwrap().approval.unwrap();
+        assert_eq!(approval.request()["request"]["input"]["file_path"], payload);
+        let reply = approval
+            .respond(Some(&serde_json::json!({"file_path": payload})), None)
+            .unwrap();
+        events.recv_until(deadline()).unwrap();
+        assert!(matches!(
+            &*sent.wait_until(deadline()).unwrap(),
+            Outcome::Written
+        ));
+        assert!(matches!(
+            &*reply.wait_until(deadline()).unwrap(),
+            Outcome::Written
+        ));
+        assert!(session.failure().is_none());
+        session.close();
+    }
+}

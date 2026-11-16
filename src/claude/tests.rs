@@ -179,6 +179,50 @@ fn refused_write_drains_already_queued_response_before_eof() {
     );
 }
 #[test]
+fn failed_write_and_stdin_error_drain_native_response_before_eof() {
+    let shared = shared(Limits::default(), None);
+    let ticket = shared
+        .enqueue(
+            Action::Initialize,
+            json!({"subtype":"initialize"}),
+            deadline(),
+            true,
+        )
+        .unwrap();
+    let id = lock(&shared.state).pending[0].id.clone();
+    let (tx, rx) = crossbeam_channel::bounded(4);
+    tx.send(RpcEvent::StdinError {
+        id: shared.generation,
+        kind: std::io::ErrorKind::BrokenPipe,
+    })
+    .unwrap();
+    tx.send(RpcEvent::Line { id: shared.generation, seq: 0, line: json!({"type":"control_response","response":{"subtype":"success","request_id":id,"response":{"retained":true}}}).to_string() }).unwrap();
+    tx.send(RpcEvent::Line { id: shared.generation, seq: 1, line: json!({"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":12}}).to_string() }).unwrap();
+    tx.send(RpcEvent::Exit {
+        id: shared.generation,
+        stderr_tail: String::new(),
+    })
+    .unwrap();
+    let mut writes = 0;
+    run_loop(Arc::clone(&shared), rx, |_, _| {
+        writes += 1;
+        assert_eq!(writes, 1, "failed stdin must not dispatch again");
+        Ok(RpcWriteReceipt::finished_for_test(
+            RpcWriteOutcome::PossiblyWritten(crate::rpc::RpcWriteFailure::Io(
+                std::io::ErrorKind::BrokenPipe,
+            )),
+        ))
+    });
+    assert!(
+        matches!(&*ticket.outcome().unwrap(), Outcome::Response(value) if value["response"]["response"]["retained"] == true)
+    );
+    assert_eq!(lock(&shared.state).snapshot.failure, Some(Failure::Eof));
+    assert_eq!(
+        lock(&shared.state).snapshot.last_result.as_ref().unwrap()["usage"]["input_tokens"],
+        12
+    );
+}
+#[test]
 fn cancellation_revokes_queued_reply_and_deadlines_settle_independently() {
     let shared = shared(Limits::default(), None);
     route(

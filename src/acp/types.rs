@@ -116,6 +116,8 @@ pub enum Failure {
 #[non_exhaustive]
 pub enum AcpError {
     /// Spawn, transport preflight, or host input validation failed.
+    /// `crate::Error::Closed` also refuses new requests after observed input closure
+    /// while the adapter can still drain native output without a terminal failure.
     #[error(transparent)]
     Transport(#[from] crate::Error),
     /// Adapter is terminal.
@@ -128,6 +130,7 @@ pub enum AcpError {
     #[error("ACP session is busy")]
     Busy,
     /// The token was answered, cancelled, expired or belongs to a closed connection.
+    /// Observed input-only closure also refuses replies without consuming the token.
     #[error("ACP permission is no longer pending")]
     StaleApproval,
     /// An unoffered decision was refused without consuming the token or approving.

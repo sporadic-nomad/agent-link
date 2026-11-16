@@ -89,6 +89,19 @@ pub(super) fn run(scene: &str) {
                     std::fs::write(path, b"received").unwrap();
                 }
                 assert_eq!(request["params"]["threadId"], "t");
+                if scene == "large" {
+                    let text = request["params"]["input"][0]["text"].as_str().unwrap();
+                    assert_eq!(text.len(), 6 * 1024 * 1024);
+                    emit(&fixtures["started"]);
+                    let mut delta = fixtures["delta"].clone();
+                    delta["params"]["delta"] = json!(text);
+                    emit(&delta);
+                    let mut approval = fixtures["approval"].clone();
+                    approval["params"]["command"] = json!(text);
+                    emit(&approval);
+                    turn_request = Some(request);
+                    continue;
+                }
                 if scene == "terminal-response" {
                     response(
                         &request,

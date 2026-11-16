@@ -14,7 +14,7 @@ The crate has no UI and no host-framework dependency: a desktop app, a TUI or a 
 harness renders the byte stream itself and drives the agent through a synchronous,
 thread-backed API. Async adapters for Tokio sit behind a feature.
 
-**Version: 0.1.0.** A standalone library for desktop apps, TUIs, services and
+**Version: 0.1.1.** A standalone library for desktop apps, TUIs, services and
 test harnesses. Before 1.0, minor releases may introduce breaking API changes. See the
 [user manual](docs/README.md) for usage guides, or
 [release preparation](CONTRIBUTING.md#release-preparation) for publication requirements.
@@ -249,7 +249,11 @@ let (child, events) = RpcChild::spawn(spec)?;
 ```
 
 Each stdout line is one `RpcEvent::Line`; an `Exit` with the stderr tail follows only when
-the child ends on its own, never after a kill:
+stdout ends naturally without a terminal transport error, never after a kill.
+`StdinError` closes input while output continues; `Error` replaces `Exit`. Codex/ACP
+also refuse new requests and approval replies once input closure is observed, while
+keeping native responses and existing deadlines active. Poll
+`child.try_wait()` for the exit code separately:
 
 ```rust
 let (done_tx, done_rx) = mpsc::channel();
@@ -334,9 +338,11 @@ result??;
   receiver is full. Final shutdown events are best effort; tickets are authoritative.
   Use `kill_async` in async applications. Hosts that reap children independently must
   coordinate with teardown: ownership checks and PID-based signals are not atomic.
-- **Events.** PTY receivers hold 1,024 events; RPC receivers default to 64, configurable
+- **Events.** PTY receivers hold 1,024 events; RPC receivers default to 8, configurable
   through `RpcLimits`. Drain or drop each receiver to keep normal operation moving.
-  Session IDs let the host distinguish a replacement session from earlier events.
+  PTY `Exit` leaves receivers connected until teardown; RPC terminal `Exit` or `Error`
+  disconnects after buffered events drain. Session IDs distinguish replacement sessions
+  from earlier events.
   The internal agent monitor is also bounded; overflow stops automation with
   `NotConnected` while raw terminal events remain available.
 - **Delivery.** Accepted messages run one at a time. Unknown foreground ownership is
@@ -355,15 +361,21 @@ result??;
   and overload handling in [the user manual](docs/agents-and-delivery.md#admission-limits-agentlimits--monitor-overflow).
 - **RPC limits and privacy.** `RpcLimits` bounds line sizes and queued input, including
   the active write. Oversized input and saturation return `InputTooLarge` and
-  `QueueFull`; oversized output and pipe failures emit terminal `RpcEvent::Error`.
+  `QueueFull`. Default stdin/stdout frames allow 8 MiB, pending stdin allows 32 MiB,
+  and eight output events retain at most 64 MiB raw (lossy UTF-8 can expand up to 3×).
+  Oversized stdout and read failures emit terminal `RpcEvent::Error`; stdin I/O
+  failures emit nonterminal `StdinError` and keep output draining. Oversized stderr
+  lines become a bounded marker and draining resumes at the next line.
   `send_line_tracked(line, deadline)` adds bounded queue/write/flush receipts
   and starts its deadline worker lazily;
   uncertain writes and unknown future receipt outcomes must not be automatically
   resent. `RpcUtf8Mode::Strict` rejects
   invalid stdout UTF-8. `close_stdin()` drains accepted input before closing stdin
   while output continues. These are transport observations, not provider receipts.
-  Drop or kill the handle after a transport error. Payloads, arguments and stderr are
-  logged only with explicit `trace: true`; exit events still carry a bounded stderr tail.
+  Drop or kill the handle after a terminal transport error. Payloads and arguments
+  require explicit `trace: true` for logging; `trace_stderr: true` opts into stderr alone.
+  Both default to false. Exit events still carry a bounded stderr tail.
+  See [migration notes](CHANGELOG.md#011--2026-11-17) for new defaults and full struct literals.
 - **Identity.** A child sees `TERM=xterm-256color`, `COLORTERM=truecolor` and none of the
   host terminal's well-known variables (`TERM_PROGRAM`, `TMUX`, `COLUMNS`, … — exact names;
   other vendor-prefixed ones such as `KITTY_*` pass through unless your policy removes
@@ -437,7 +449,9 @@ evidence. With `probe`, `probe_agents_detailed` applies the full `EnvPolicy` and
 check a direct executable in an explicit working directory. Login-shell mode remains
 the default and reports that startup files may override the context. Explicit Unix
 shell paths are used as given, including custom paths named `sh`; a nonexistent shell
-fails to spawn. A successful version probe does not certify a native protocol or a future CLI release. See
+fails to spawn. If the host working directory cannot be read, detailed readiness is
+`Untested` with `WorkingDirectoryUnavailable`; the legacy `installed: false` is
+inconclusive. A successful version probe does not certify a native protocol or a future CLI release. See
 [compatibility and probe diagnostics](docs/permissions-and-probes.md#profile-compatibility-metadata-compatibility).
 
 ## Platforms

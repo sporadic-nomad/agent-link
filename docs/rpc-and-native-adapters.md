@@ -43,12 +43,12 @@ Inspect its stderr tail and use `RpcChild::try_wait` to observe the shell's exit
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `max_stdout_line_bytes` | `1 MiB` | Max raw stdout frame including delimiter. |
+| `max_stdout_line_bytes` | `8 MiB` | Max raw stdout frame including delimiter. |
 | `max_stderr_line_bytes` | `64 KiB` | Max raw stderr frame including delimiter. |
-| `max_stdin_line_bytes` | `1 MiB` | Max stdin frame including appended `\n`. |
-| `max_pending_stdin_bytes` | `4 MiB` | Queued + active write bytes. |
+| `max_stdin_line_bytes` | `8 MiB` | Max stdin frame including appended `\n`. |
+| `max_pending_stdin_bytes` | `32 MiB` | Queued + active write bytes. |
 | `max_pending_stdin_lines` | `1,024` | Queued + active lines (also caps pending receipts). |
-| `event_capacity` | `64` | Bounded `Receiver<RpcEvent>` capacity. |
+| `event_capacity` | `8` | Bounded `Receiver<RpcEvent>` capacity. |
 
 ### Writing, Tracked Receipts & Half-Close
 
@@ -64,11 +64,38 @@ Inspect its stderr tail and use `RpcChild::try_wait` to observe the shell's exit
 - `child.reap_observation().status()` — non-blocking direct-child reap evidence (`Pending`, `Reaped`, `Unknown`).
 - `child.kill()` / `Drop` — tears down process group/tree and reaps bounded at ~2 s.
 
+The default output queue retains at most 64 MiB of raw stdout frames (8 × 8 MiB).
+Lossy UTF-8 decoding can expand these strings up to threefold, in addition to the
+reader frame and other buffers. Input budgets include active writes. When customizing
+frame sizes, also review queue byte budgets and event counts. These limits are library
+resource policy, not vendor protocol maxima.
+
+Set `spec.trace_stderr = true` to log stderr alone. Full `spec.trace = true` also logs
+stdin/stdout payloads and command arguments. Both default to false; either stderr
+opt-in can expose sensitive diagnostics.
+
 ### `RpcEvent` & Transport Errors
 
 - `RpcEvent::Line { id, seq, line }` — one decoded stdout line (trailing `\n` then `\r` stripped).
+- `RpcEvent::StdinError { id, kind }` — stdin I/O failed; pending write receipts settle and new input is refused, but stdout/stderr keep draining toward `Exit`. A terminal event that wins the race may suppress this notification.
 - `RpcEvent::Error { id, error: RpcTransportError }` — terminal error (`LineTooLong`, `InvalidUtf8`, `WriteDeadlineExceeded`, `Io`). No `Exit` follows; drop or kill the child.
-- `RpcEvent::Exit { id, stderr_tail }` — natural stdout EOF without teardown; `stderr_tail` retains up to 32 lines / 4 KiB.
+- `RpcEvent::Exit { id, stderr_tail }` — natural stdout EOF without teardown or terminal transport failure; `stderr_tail` retains up to 32 lines / 4 KiB. This event carries no exit code: poll `child.try_wait()` separately; stdout may close while the child still runs.
+
+`Exit` and `Error` are terminal and disconnect the receiver after buffered events drain.
+Teardown disconnects without synthesizing either event. An oversized stderr line is
+replaced immediately when the limit is exceeded by `[agent-link: oversized stderr line dropped]`;
+the rest of that line is discarded with bounded memory, then later lines resume.
+Oversized stdout and genuine stderr read failures remain terminal errors.
+`StdinError` may leave a live child and its output open indefinitely; enforce a host
+lifecycle deadline and explicitly drop or kill the child when it is no longer needed.
+
+Codex/ACP make observed input closure sticky across host calls. New ordinary/control
+requests return `Transport(crate::Error::Closed)`; approval replies return `StaleApproval`
+without consuming tokens or reserving capacity. `snapshot().failure` remains unset
+until a genuine terminal condition. Incoming native responses/events and existing
+request/approval deadlines remain active; automatic replies that can no longer be
+written are skipped. Closure is observed asynchronously, not atomically with the child
+closing its pipe.
 
 ---
 
@@ -112,7 +139,7 @@ Enable `codex` (implies `rpc`, adds `serde_json`). Manages **one root thread per
   - Terminal results/notifications invalidate pending approvals for that turn.
   - Answering an expired token returns `Err(CodexError::StaleApproval)` **and** stops the connection with `Failure::ApprovalExpired`.
   - Answering an unoffered decision returns `Err(CodexError::InvalidDecision)` **and** stops the connection with `Failure::Protocol`.
-- **Budgets (`CodexLimits`):** `max_frame_bytes` 1 MiB, `pending_requests` 32 / 4 MiB, `control_capacity` 8 / 2 MiB, `approvals` 16 / 2 MiB, `events` 64 / 4 MiB, `approval_timeout` 300 s, `control_timeout` 10 s. Event queue saturation stops the connection with `Failure::ConsumerLagged`.
+- **Budgets (`CodexLimits`):** `max_frame_bytes` 8 MiB, `pending_requests` 32 / 32 MiB, `control_capacity` 8 / 32 MiB, `approvals` 16 / 16 MiB, `events` 64 / 32 MiB, `approval_timeout` 300 s, `control_timeout` 10 s. Event queue saturation stops the connection with `Failure::ConsumerLagged`.
 
 ---
 
@@ -151,7 +178,7 @@ Enable `claude` (implies `rpc`, adds `serde_json`). Implements Claude's persiste
    - When `resume: Some(id)` is passed, appends `--resume=<id>` and blocks `send`/`interrupt` until `initialize` succeeds and matching `session_id` is observed (fail-closed; some CLI versions emit `session_id` only after first input, making pre-input strict resume unavailable).
 3. `session.initialize(deadline)`, `session.send(text, uuid, deadline)`, `session.interrupt(deadline)`.
    - Turn `result` envelopes never close stdin (`Snapshot::last_result` commits before event publication).
-   - `Limits` defaults: `frame_bytes` 1 MiB, `pending` 16 / 4 MiB, `control_pending` 4 / 2 MiB, `approvals` 8 / 1 MiB, `events` 64 / 4 MiB, `tasks` 16 / 1 MiB, **`approval_timeout` 60 s**.
+   - `Limits` defaults: `frame_bytes` 8 MiB, `pending` 16 / 32 MiB, `control_pending` 4 / 32 MiB, `approvals` 8 / 16 MiB, `events` 64 / 32 MiB, `tasks` 16 / 1 MiB, **`approval_timeout` 60 s**.
    - `Approval::respond(updated_input, denial)`: supply either a JSON object `Some(&obj)` for `updated_input` OR `Some(message)` for `denial` (`None, None` sends a host denial).
 
 `Outcome::Written` confirms the input write. To report a successful turn, consume

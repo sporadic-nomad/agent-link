@@ -76,6 +76,7 @@ pub(super) fn run_loop(
             recv(incoming) -> event => {
                 let result = match event {
                     Ok(RpcEvent::Line { seq, line, .. }) => ingress(&shared, seq, &line),
+                    Ok(RpcEvent::StdinError { .. }) => { lock(&shared.state).input_closed = true; writes = WriteState::Draining; Ok(()) },
                     Ok(RpcEvent::Error { error, .. }) => Err(Failure::Transport(error)),
                     Ok(RpcEvent::Exit { .. }) | Err(_) => Err(Failure::Eof),
                 };
@@ -97,6 +98,9 @@ pub(super) fn maintenance(shared: &Shared) -> Result<WriteState, Failure> {
         let mut state = lock(&shared.state);
         if state.snapshot.failure.is_some() {
             return Ok(WriteState::Draining);
+        }
+        if state.input_closed {
+            writes = WriteState::Draining;
         }
         let mut failure = None;
         state.pending.retain_mut(|p| {
@@ -136,6 +140,9 @@ pub(super) fn maintenance(shared: &Shared) -> Result<WriteState, Failure> {
                 }
             }
         });
+        if writes == WriteState::Draining {
+            state.input_closed = true;
+        }
         if state.approvals.values().any(|a| a.request.deadline <= now) {
             failure = Some(Failure::ApprovalExpired);
         }
@@ -160,6 +167,9 @@ fn dispatch(
     let next = {
         let mut state = lock(&shared.state);
         if state.snapshot.failure.is_some() {
+            return Ok(WriteState::Draining);
+        }
+        if state.input_closed {
             return Ok(WriteState::Draining);
         }
         let active = state.pending.iter().any(|p| {
@@ -200,6 +210,7 @@ fn dispatch(
                 let failed = matches!(receipt.status(), RpcWriteStatus::Finished(outcome) if outcome != RpcWriteOutcome::Written);
                 pending.receipt = Some(receipt);
                 if failed {
+                    state.input_closed = true;
                     return Ok(WriteState::Draining);
                 }
             }
@@ -207,6 +218,7 @@ fn dispatch(
                 // This can precede the EOF/error event even if previous writes all
                 // completed successfully. Keep reading instead of truncating output.
                 pending.dispatched = false;
+                state.input_closed = true;
                 return Ok(WriteState::Draining);
             }
             Err(_) => {

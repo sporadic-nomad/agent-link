@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, bounded, select_biased};
 
-use super::framing::{ReadError, read_frame};
+use super::framing::{ReadError, discard_line, read_frame};
 use super::input::{Input, WriteCompletion};
 use super::stderr_ring::StderrRing;
 use super::{
@@ -116,6 +116,7 @@ pub(super) struct Config {
     pub(super) tag: String,
     pub(super) publisher: Arc<Publisher>,
     pub(super) trace: bool,
+    pub(super) trace_stderr: bool,
     pub(super) limits: RpcLimits,
     pub(super) stdout_utf8: RpcUtf8Mode,
 }
@@ -134,7 +135,7 @@ impl Config {
     }
 }
 
-/// Keeps a bounded stderr tail for the exit event. Payloads are logged only with trace.
+/// Keeps a bounded stderr tail for the exit event. Logging requires stderr trace opt-in.
 pub(super) fn spawn_stderr(
     cfg: Config,
     stderr: ChildStderr,
@@ -150,6 +151,24 @@ pub(super) fn spawn_stderr(
                 match read_frame(&mut reader, &mut buf, cfg.limits.max_stderr_line_bytes) {
                     Ok(0) => break,
                     Ok(_) => {}
+                    Err(ReadError::TooLong) => {
+                        // Never retain or trace any prefix of a discarded diagnostic.
+                        // Publish its marker before draining: EOF may never arrive.
+                        buf.clear();
+                        ring.push("[agent-link: oversized stderr line dropped]".into());
+                        match discard_line(&mut reader, || cfg.publisher.stopped()) {
+                            Ok(true) => continue,
+                            Ok(false) => break,
+                            Err(err) => {
+                                cfg.read_failed(
+                                    RpcStream::Stderr,
+                                    cfg.limits.max_stderr_line_bytes,
+                                    err,
+                                );
+                                break;
+                            }
+                        }
+                    }
                     Err(err) => {
                         cfg.read_failed(RpcStream::Stderr, cfg.limits.max_stderr_line_bytes, err);
                         break;
@@ -159,7 +178,7 @@ pub(super) fn spawn_stderr(
                 if line.is_empty() {
                     continue;
                 }
-                if cfg.trace {
+                if cfg.trace_stderr {
                     log::warn!("{} stderr: {}", cfg.tag, trace_snip(&line));
                 }
                 ring.push(line);
@@ -279,12 +298,23 @@ fn run_writer(cfg: Config, mut stdin: impl Write) {
             WriteCompletion::Written => {}
             WriteCompletion::Stopped => break,
             WriteCompletion::Failed(error) => {
-                // Close the pipe before potentially blocking on terminal-event publication.
+                // Input receipts/admission are settled. Close the pipe before potentially
+                // blocking on bounded event publication; teardown can cancel that send.
                 drop(stdin);
                 if let Some(trace) = trace {
                     log::info!("{} failed stdin payload: {trace}", cfg.tag);
                 }
-                cfg.fail(error);
+                if let RpcTransportError::Io {
+                    stream: RpcStream::Stdin,
+                    kind,
+                } = error
+                {
+                    log::warn!("{} stdin failed: {kind:?}; output remains open", cfg.tag);
+                    cfg.publisher
+                        .publish(RpcEvent::StdinError { id: cfg.id, kind });
+                } else {
+                    cfg.fail(error);
+                }
                 log::info!("{} writer thread ending after {written} line(s)", cfg.tag);
                 return;
             }
@@ -310,6 +340,147 @@ pub(super) fn spawn_writer(cfg: Config, stdin: ChildStdin) -> Result<JoinHandle<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdin_failure_before_stdout_eof_preserves_output_and_exit() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                unreachable!()
+            }
+        }
+        let input = Input::new(RpcLimits::default());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let active = input.send_tracked("active", deadline, || Ok(())).unwrap();
+        let queued = input.send_tracked("queued", deadline, || Ok(())).unwrap();
+        let (publisher, events) = Publisher::new(4, input.clone());
+        let cfg = Config {
+            id: SessionId(1),
+            tag: "test".into(),
+            publisher,
+            trace: false,
+            trace_stderr: false,
+            limits: RpcLimits::default(),
+            stdout_utf8: RpcUtf8Mode::Strict,
+        };
+        run_writer(cfg.clone(), Broken);
+        assert_eq!(
+            active.wait_until(deadline),
+            Some(super::super::RpcWriteOutcome::PossiblyWritten(
+                RpcWriteFailure::Io(std::io::ErrorKind::BrokenPipe)
+            ))
+        );
+        assert_eq!(
+            queued.wait_until(deadline),
+            Some(super::super::RpcWriteOutcome::NotWritten(
+                RpcWriteFailure::Closed
+            ))
+        );
+        assert!(matches!(input.send("later"), Err(Error::Closed)));
+        cfg.publisher.publish(RpcEvent::Line {
+            id: cfg.id,
+            seq: 0,
+            line: "final stdout".into(),
+        });
+        let ring = StderrRing::default();
+        ring.push("final stderr".into());
+        let (done, done_rx) = bounded(0);
+        drop(done);
+        finish_stdout(&cfg, 1, &ring, &done_rx);
+        assert_eq!(
+            events.recv_deadline(deadline).unwrap(),
+            RpcEvent::StdinError {
+                id: cfg.id,
+                kind: std::io::ErrorKind::BrokenPipe
+            }
+        );
+        assert_eq!(
+            events.recv_deadline(deadline).unwrap(),
+            RpcEvent::Line {
+                id: cfg.id,
+                seq: 0,
+                line: "final stdout".into()
+            }
+        );
+        assert_eq!(
+            events.recv_deadline(deadline).unwrap(),
+            RpcEvent::Exit {
+                id: cfg.id,
+                stderr_tail: "final stderr".into()
+            }
+        );
+        assert!(events.recv_deadline(deadline).is_err());
+    }
+
+    #[test]
+    fn backpressured_stdin_error_settles_receipts_and_teardown_releases_writer() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                unreachable!()
+            }
+        }
+        let input = Input::new(RpcLimits::default());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let active = input.send_tracked("active", deadline, || Ok(())).unwrap();
+        let queued = input.send_tracked("queued", deadline, || Ok(())).unwrap();
+        let (publisher, events) = Publisher::new(1, input.clone());
+        publisher.publish(RpcEvent::Line {
+            id: SessionId(1),
+            seq: 0,
+            line: "full".into(),
+        });
+        let cfg = Config {
+            id: SessionId(1),
+            tag: "test".into(),
+            publisher: publisher.clone(),
+            trace: false,
+            trace_stderr: false,
+            limits: RpcLimits::default(),
+            stdout_utf8: RpcUtf8Mode::Strict,
+        };
+        let (done_tx, done) = bounded(1);
+        let writer = std::thread::spawn(move || {
+            run_writer(cfg, Broken);
+            let _ = done_tx.send(());
+        });
+        let active_outcome = active.wait_until(deadline);
+        let queued_outcome = queued.wait_until(deadline);
+        let premature_completion = done.try_recv();
+        let closed = input.send("late");
+        // Always release the writer before assertions, even if settlement failed.
+        publisher.close();
+        done.recv_deadline(deadline).unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            active_outcome,
+            Some(super::super::RpcWriteOutcome::PossiblyWritten(
+                RpcWriteFailure::Io(std::io::ErrorKind::BrokenPipe)
+            ))
+        );
+        assert_eq!(
+            queued_outcome,
+            Some(super::super::RpcWriteOutcome::NotWritten(
+                RpcWriteFailure::Closed
+            ))
+        );
+        assert!(
+            premature_completion.is_err(),
+            "full receiver blocks notification only"
+        );
+        assert!(matches!(closed, Err(Error::Closed)));
+        assert!(matches!(
+            events.recv_deadline(deadline),
+            Ok(RpcEvent::Line { .. })
+        ));
+        assert!(events.recv_deadline(deadline).is_err());
+    }
 
     #[test]
     fn stdin_failure_after_stdout_eof_preserves_exit_and_final_stderr_tail() {
@@ -341,6 +512,7 @@ mod tests {
             tag: "test".into(),
             publisher,
             trace: false,
+            trace_stderr: false,
             limits: RpcLimits::default(),
             stdout_utf8: RpcUtf8Mode::Strict,
         };
@@ -439,8 +611,9 @@ mod tests {
                 Config {
                     id: SessionId(1),
                     tag: "test".into(),
-                    publisher,
+                    publisher: publisher.clone(),
                     trace: false,
+                    trace_stderr: false,
                     limits: RpcLimits::default(),
                     stdout_utf8: RpcUtf8Mode::Strict,
                 },
@@ -463,11 +636,13 @@ mod tests {
             assert!(matches!(input.send("next"), Err(Error::Closed)));
             assert!(matches!(
                 events.recv().unwrap(),
-                RpcEvent::Error {
-                    error: RpcTransportError::Io { .. },
+                RpcEvent::StdinError {
+                    kind: io::ErrorKind::Other,
                     ..
                 }
             ));
+            assert!(!publisher.stopped());
+            publisher.close();
             assert!(events.recv().is_err());
         }
     }
@@ -507,6 +682,7 @@ mod tests {
             tag: "test".into(),
             publisher,
             trace: false,
+            trace_stderr: false,
             limits: RpcLimits::default(),
             stdout_utf8: RpcUtf8Mode::Strict,
         };

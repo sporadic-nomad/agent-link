@@ -36,7 +36,11 @@ pub struct ProbeOptions {
     /// Used as given, with `-c` for a filename of `sh` and `-l -i -c` otherwise.
     /// A nonexistent shell produces an I/O failure, without substituting another shell.
     pub shell: Option<String>,
-    /// Working directory. `None` snapshots the host's current directory.
+    /// Working directory. `None` snapshots the host's current directory; relative
+    /// paths resolve against it. If that directory cannot be read, no commands run:
+    /// readiness is [`RuntimeReadiness::Untested`] with
+    /// [`ContextDiagnostic::WorkingDirectoryUnavailable`]. An explicit absolute
+    /// path does not require reading the host's current directory.
     pub cwd: Option<PathBuf>,
 }
 impl Default for ProbeOptions {

@@ -70,24 +70,25 @@ pub const COMPATIBILITY_EVIDENCE: &[crate::agent::compatibility::Evidence] = &[
     },
 ];
 
-/// Finite budgets. Pending includes active writes and unpublished completions.
+/// Finite library resource policy, not vendor protocol maxima.
+/// Pending includes active writes and unpublished completions.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Maximum serialized frame bytes, including newline.
+    /// Maximum serialized frame bytes, including newline. Default: 8 MiB.
     pub frame_bytes: usize,
     /// Ordinary queued/active operations.
     pub pending: usize,
-    /// Ordinary pending serialized frames and IDs, including active writes.
+    /// Ordinary pending serialized frames and IDs, including active writes. Default: 32 MiB.
     pub pending_bytes: usize,
-    /// Reserved control pending serialized frames and IDs.
+    /// Reserved control pending serialized frames and IDs. Default: 32 MiB.
     pub control_bytes: usize,
     /// Outgoing control requests; one additional slot is reserved for replies.
     pub control_pending: usize,
-    /// Outstanding approval IDs and request envelopes.
+    /// Outstanding approval IDs and request envelopes. Default: 16 MiB.
     pub approval_bytes: usize,
     /// Host events retained independently of transport events.
     pub events: usize,
-    /// Serialized native bytes plus projected identity bytes retained in events.
+    /// Serialized native bytes plus projected identity bytes retained in events. Default: 32 MiB.
     pub event_bytes: usize,
     /// Incoming unresolved approvals.
     pub approvals: usize,
@@ -101,14 +102,14 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            frame_bytes: 1024 * 1024,
+            frame_bytes: 8 * 1024 * 1024,
             pending: 16,
-            pending_bytes: 4 * 1024 * 1024,
-            control_bytes: 2 * 1024 * 1024,
+            pending_bytes: 32 * 1024 * 1024,
+            control_bytes: 32 * 1024 * 1024,
             control_pending: 4,
-            approval_bytes: 1024 * 1024,
+            approval_bytes: 16 * 1024 * 1024,
             events: 64,
-            event_bytes: 4 * 1024 * 1024,
+            event_bytes: 32 * 1024 * 1024,
             approvals: 8,
             tasks: 16,
             task_bytes: 1024 * 1024,
@@ -818,6 +819,10 @@ fn run_loop(
                 if let Err(failure) = route(&shared, seq, &line) {
                     shared.stop(failure);
                 }
+            }
+            Ok(RpcEvent::StdinError { .. }) => {
+                draining = true;
+                lock(&shared.state).draining = true;
             }
             Ok(RpcEvent::Exit { .. }) => shared.stop(Failure::Eof),
             Ok(RpcEvent::Error { .. }) => shared.stop(Failure::Transport),

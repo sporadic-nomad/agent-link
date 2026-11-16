@@ -345,6 +345,19 @@ mod unix {
     }
 
     #[test]
+    fn default_limits_round_trip_a_multi_megabyte_frame() {
+        let dir = temp();
+        let (child, events) = RpcChild::spawn(sh_spec(dir.path(), "large", "cat", &[])).unwrap();
+        let payload = "x".repeat(6 * 1024 * 1024);
+        child.send_line(&payload).unwrap();
+        assert_eq!(
+            next_event(&events, "large frame"),
+            line(child.id(), 0, &payload)
+        );
+        drop(child);
+    }
+
+    #[test]
     fn lines_round_trip_through_cat_with_seq_and_the_spawn_is_logged() {
         logger::install();
         let dir = temp();
@@ -519,6 +532,89 @@ mod unix {
         assert_disconnects_without_exit(&events);
     }
 
+    #[test]
+    fn failed_active_stdin_preserves_native_output_or_allows_backpressured_teardown() {
+        use agent_link::rpc::{RpcWriteFailure, RpcWriteOutcome, RpcWriteStatus};
+        logger::install();
+        for teardown in [false, true] {
+            let dir = temp();
+            // File handshakes force an active write before stdin closes, and keep stdout
+            // open until the host has observed the failed receipt. No race with EOF.
+            let script = "echo ready; while [ ! -e close-input ]; do sleep 0.01; done; exec 0<&-; echo final-one; echo final-two; while [ ! -e finish ]; do sleep 0.01; done; echo final-stderr >&2; exit 7";
+            let key = if teardown {
+                "stdin-backpressure"
+            } else {
+                "stdin-drain"
+            };
+            let mut spec = sh_spec(dir.path(), key, "sh", &["-c", script]);
+            spec.limits.event_capacity = 1;
+            let (child, events) = RpcChild::spawn(spec).unwrap();
+            assert_eq!(next_event(&events, "ready"), line(child.id(), 0, "ready"));
+            let active = child
+                .send_line_tracked(&"x".repeat(1024 * 1024 - 1), deadline())
+                .unwrap();
+            wait_for("active stdin write", || {
+                active.status() == RpcWriteStatus::Writing
+            });
+            let queued = child.send_line_tracked("queued", deadline()).unwrap();
+            std::fs::write(dir.path().join("close-input"), b"").unwrap();
+            assert_eq!(
+                active.wait_until(deadline()),
+                Some(RpcWriteOutcome::PossiblyWritten(RpcWriteFailure::Io(
+                    std::io::ErrorKind::BrokenPipe
+                )))
+            );
+            assert_eq!(
+                queued.wait_until(deadline()),
+                Some(RpcWriteOutcome::NotWritten(RpcWriteFailure::Closed))
+            );
+            assert!(matches!(child.send_line("late"), Err(Error::Closed)));
+            assert_eq!(
+                child.try_wait().unwrap(),
+                None,
+                "closed stdin does not imply child exit"
+            );
+            wait_for("full event receiver", || events.is_full());
+            if teardown {
+                let started = Instant::now();
+                child.kill();
+                assert!(started.elapsed() < Duration::from_secs(10));
+                assert_disconnects_without_exit(&events);
+                wait_log(key, "writer thread ending");
+            } else {
+                let mut lines = Vec::new();
+                let mut failures = 0;
+                loop {
+                    match next_event(&events, "draining output") {
+                        RpcEvent::StdinError { kind, .. } => {
+                            assert_eq!(kind, std::io::ErrorKind::BrokenPipe);
+                            failures += 1;
+                        }
+                        RpcEvent::Line { seq, line, .. } => lines.push((seq, line)),
+                        RpcEvent::Exit { stderr_tail, .. } => {
+                            assert_eq!(stderr_tail, "final-stderr");
+                            break;
+                        }
+                        other => panic!("unexpected event: {other:?}"),
+                    }
+                    if lines.len() == 2 && failures == 1 {
+                        std::fs::write(dir.path().join("finish"), b"").unwrap();
+                    }
+                }
+                assert_eq!(
+                    lines,
+                    vec![(1, "final-one".into()), (2, "final-two".into())]
+                );
+                assert_eq!(failures, 1);
+                assert_eq!(wait_exit(&child), Some(7));
+                assert!(matches!(
+                    events.recv_deadline(deadline()),
+                    Err(RecvTimeoutError::Disconnected)
+                ));
+            }
+        }
+    }
+
     /// A child that closed its stdin: the first write fails, the writer stops, and from
     /// then on `send_line` reports `Closed` — while the child still runs.
     #[test]
@@ -539,7 +635,10 @@ mod unix {
             assert!(Instant::now() < deadline, "send_line never reported Closed");
             std::thread::sleep(Duration::from_millis(10));
         }
-        wait_log("stdin-gone", "transport failed: RPC Stdin I/O failed");
+        assert!(matches!(
+            next_event(&events, "stdin error"),
+            RpcEvent::StdinError { .. }
+        ));
         assert_eq!(child.try_wait().unwrap(), None, "the child still runs");
     }
 
@@ -547,12 +646,12 @@ mod unix {
     fn payloads_arguments_and_stderr_are_logged_only_with_explicit_trace() {
         logger::install();
         let dir = temp();
-        for trace in [false, true] {
-            let key = if trace {
-                "privacy-opt-in"
-            } else {
-                "privacy-default"
-            };
+        for (trace, trace_stderr, key) in [
+            (false, false, "privacy-default"),
+            (false, true, "privacy-stderr"),
+            (true, false, "privacy-opt-in"),
+            (true, true, "privacy-both"),
+        ] {
             let arg_secret = format!("PRIVATE_ARGUMENT_{key}");
             let err_secret = format!("PRIVATE_STDERR_{key}");
             let input_secret = format!("PRIVATE_INPUT_{key}");
@@ -566,6 +665,7 @@ mod unix {
                 &["-c", script, "_", &arg_secret, &err_secret],
             );
             spec.trace = trace;
+            spec.trace_stderr = trace_stderr;
             let (child, events) = RpcChild::spawn(spec).unwrap();
             assert_eq!(
                 next_event(&events, "first output"),
@@ -585,34 +685,68 @@ mod unix {
             );
             wait_log(key, "writer thread ending");
             let logs = tagged(key).join("\n");
-            for secret in [&arg_secret, &err_secret, &input_secret] {
+            assert_eq!(logs.contains(&err_secret), trace || trace_stderr, "{logs}");
+            for secret in [&arg_secret, &input_secret] {
                 assert_eq!(logs.contains(secret), trace, "trace={trace}: {logs}");
             }
         }
     }
 
     #[test]
+    fn stderr_only_trace_bounds_unicode_and_omits_oversized_payloads() {
+        logger::install();
+        let dir = temp();
+        let unicode = "é".repeat(450);
+        let dropped = "PRIVATE_OVERSIZED_STDERR".repeat(100);
+        let mut spec = sh_spec(
+            dir.path(),
+            "stderr-bounds",
+            "sh",
+            &[
+                "-c",
+                "printf '%s\\n' \"$1\" \"$2\" >&2",
+                "_",
+                &unicode,
+                &dropped,
+            ],
+        );
+        spec.trace_stderr = true;
+        spec.limits.max_stderr_line_bytes = 1024;
+        let (child, events) = RpcChild::spawn(spec).unwrap();
+        assert_eq!(
+            next_event(&events, "stderr exit"),
+            RpcEvent::Exit {
+                id: child.id(),
+                stderr_tail: format!("{unicode}\n[agent-link: oversized stderr line dropped]"),
+            }
+        );
+        let logs = tagged("stderr-bounds").join("\n");
+        assert!(
+            logs.contains(&format!("stderr: {}… (+50 chars)", "é".repeat(400))),
+            "{logs}"
+        );
+        assert!(!logs.contains(&unicode), "{logs}");
+        assert!(!logs.contains("PRIVATE_OVERSIZED_STDERR"), "{logs}");
+        assert!(!logs.contains("launch details:"), "{logs}");
+    }
+
+    #[test]
     fn failed_stdin_writes_report_metadata_without_logging_the_payload() {
         logger::install();
         let dir = temp();
-        let spec = sh_spec(
+        let mut spec = sh_spec(
             dir.path(),
             "private-failure",
             "sh",
             &["-c", "exec 0<&-; echo ready; exec sleep 60"],
         );
+        spec.trace_stderr = true;
         let (child, events) = RpcChild::spawn(spec).unwrap();
         assert_eq!(next_event(&events, "ready"), line(child.id(), 0, "ready"));
         child.send_line("PRIVATE_FAILED_WRITE_PAYLOAD").unwrap();
         assert!(matches!(
             next_event(&events, "write failure"),
-            RpcEvent::Error {
-                error: RpcTransportError::Io {
-                    stream: RpcStream::Stdin,
-                    ..
-                },
-                ..
-            }
+            RpcEvent::StdinError { .. }
         ));
         wait_log("private-failure", "writer thread ending");
         assert!(
@@ -624,31 +758,95 @@ mod unix {
     }
 
     #[test]
-    fn oversized_stdout_and_stderr_frames_end_with_a_structured_error() {
+    fn oversized_stdout_frames_end_with_a_structured_error() {
         let dir = temp();
-        for stream in [RpcStream::Stdout, RpcStream::Stderr] {
-            let script = if stream == RpcStream::Stdout {
-                "printf '123456789'; exec sleep 60"
-            } else {
-                "printf '123456789' >&2; exec sleep 60"
-            };
-            let mut spec = sh_spec(dir.path(), "oversized-output", "sh", &["-c", script]);
-            spec.limits.max_stdout_line_bytes = 8;
-            spec.limits.max_stderr_line_bytes = 8;
-            let (child, events) = RpcChild::spawn(spec).unwrap();
-            assert_eq!(
-                next_event(&events, "oversized frame"),
-                RpcEvent::Error {
-                    id: child.id(),
-                    error: RpcTransportError::LineTooLong { stream, limit: 8 }
+        let mut spec = sh_spec(
+            dir.path(),
+            "oversized-output",
+            "sh",
+            &["-c", "printf '123456789'; exec sleep 60"],
+        );
+        spec.limits.max_stdout_line_bytes = 8;
+        let (child, events) = RpcChild::spawn(spec).unwrap();
+        assert_eq!(
+            next_event(&events, "oversized stdout"),
+            RpcEvent::Error {
+                id: child.id(),
+                error: RpcTransportError::LineTooLong {
+                    stream: RpcStream::Stdout,
+                    limit: 8
                 }
-            );
-            assert!(matches!(
-                events.recv_deadline(deadline()),
-                Err(RecvTimeoutError::Disconnected)
-            ));
-            assert!(matches!(child.send_line("later"), Err(Error::Closed)));
-        }
+            }
+        );
+        assert!(matches!(
+            events.recv_deadline(deadline()),
+            Err(RecvTimeoutError::Disconnected)
+        ));
+        assert!(matches!(child.send_line("later"), Err(Error::Closed)));
+    }
+
+    #[test]
+    fn oversized_stderr_is_discarded_and_input_and_stdout_continue() {
+        logger::install();
+        let dir = temp();
+        // Exceed both the line budget and BufReader's buffer; invalid UTF-8 is
+        // discarded along with the entire line, even when trace is enabled.
+        let script = "i=0; while [ $i -lt 9000 ]; do printf x >&2; i=$((i+1)); done; printf '\\377\\nkept\\n' >&2; IFS= read -r reply; printf '%s\\n' \"$reply\"";
+        let mut spec = sh_spec(dir.path(), "stderr-recovery", "sh", &["-c", script]);
+        spec.limits.max_stderr_line_bytes = 8;
+        spec.trace = true;
+        let (child, events) = RpcChild::spawn(spec).unwrap();
+        child.send_line("reply").unwrap();
+        assert_eq!(
+            next_event(&events, "stdout after oversized stderr"),
+            line(child.id(), 0, "reply")
+        );
+        assert_eq!(
+            next_event(&events, "exit after oversized stderr"),
+            RpcEvent::Exit {
+                id: child.id(),
+                stderr_tail: "[agent-link: oversized stderr line dropped]\nkept".into(),
+            }
+        );
+        wait_log("stderr-recovery", "stderr reader ended");
+        assert!(!tagged("stderr-recovery").join("\n").contains("xxxxxxxxx"));
+    }
+
+    #[test]
+    fn oversized_unterminated_stderr_records_a_marker_before_drain_finishes() {
+        let dir = temp();
+        let script = "i=0; while [ $i -lt 100000 ]; do printf x >&2; i=$((i+1)); done; printf 'ready\\n'; exec 1>&-; exec sleep 60";
+        let mut spec = sh_spec(dir.path(), "stderr-open", "sh", &["-c", script]);
+        spec.limits.max_stderr_line_bytes = 8;
+        let (child, events) = RpcChild::spawn(spec).unwrap();
+        assert_eq!(next_event(&events, "ready"), line(child.id(), 0, "ready"));
+        assert_eq!(
+            next_event(&events, "bounded stderr drain"),
+            RpcEvent::Exit {
+                id: child.id(),
+                stderr_tail: "[agent-link: oversized stderr line dropped]".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn oversized_unterminated_stderr_records_a_marker_at_eof() {
+        let dir = temp();
+        let mut spec = sh_spec(
+            dir.path(),
+            "stderr-eof",
+            "sh",
+            &["-c", "printf '123456789' >&2"],
+        );
+        spec.limits.max_stderr_line_bytes = 8;
+        let (child, events) = RpcChild::spawn(spec).unwrap();
+        assert_eq!(
+            next_event(&events, "stderr EOF"),
+            RpcEvent::Exit {
+                id: child.id(),
+                stderr_tail: "[agent-link: oversized stderr line dropped]".into(),
+            }
+        );
     }
 
     #[test]

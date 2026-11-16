@@ -19,6 +19,13 @@ fn spawn_with_options(
     scene: &str,
     options: CodexOptions,
 ) -> (tempfile::TempDir, CodexAppServer, CodexEvents) {
+    spawn_with_stdout_limit(scene, options, None)
+}
+fn spawn_with_stdout_limit(
+    scene: &str,
+    options: CodexOptions,
+    stdout_limit: Option<usize>,
+) -> (tempfile::TempDir, CodexAppServer, CodexEvents) {
     let temp = tempfile::tempdir().unwrap();
     let launch = RpcLaunch::new(
         common::fake_agent_path().to_str().unwrap(),
@@ -26,6 +33,9 @@ fn spawn_with_options(
     );
     let mut spec = RpcSpawnSpec::new(launch, temp.path());
     spec.shell = Some("/bin/sh".into());
+    if let Some(limit) = stdout_limit {
+        spec.limits.max_stdout_line_bytes = limit;
+    }
     spec.env.inherit = false;
     spec.env
         .set("HOME", temp.path())
@@ -488,4 +498,50 @@ fn dropping_owner_settles_tickets_and_invalidates_approval_handles() {
         approval.respond(json!("accept")),
         Err(CodexError::StaleApproval)
     ));
+}
+
+#[test]
+fn default_budgets_deliver_large_text_and_approval_envelopes() {
+    for native_events in [NativeEvents::Retain, NativeEvents::Omit] {
+        let mut options = CodexOptions::default();
+        options.native_events = native_events;
+        let (_temp, app, events) = spawn_with_options("large", options);
+        start(&app);
+        let payload = "x".repeat(6 * 1024 * 1024);
+        let ticket = app.turn_start(&payload, deadline()).unwrap();
+        let mut saw_text = false;
+        loop {
+            let event = events.recv_until(deadline()).unwrap();
+            if let EventKind::Text { text, .. } = event.portable.kind {
+                assert_eq!(text, payload);
+                saw_text = true;
+            }
+            if let Some(approval) = event.approval {
+                assert_eq!(approval.request().params["command"], payload);
+                approval.respond(json!("decline")).unwrap();
+                break;
+            }
+        }
+        assert!(saw_text);
+        result(&ticket);
+        assert!(app.failure().is_none());
+        app.close();
+    }
+}
+
+#[test]
+fn explicit_lower_transport_stdout_limit_remains_authoritative() {
+    let limit = 1024 * 1024;
+    let (_temp, app, _events) =
+        spawn_with_stdout_limit("large", CodexOptions::default(), Some(limit));
+    start(&app);
+    let ticket = app
+        .turn_start(&"x".repeat(6 * 1024 * 1024), deadline())
+        .unwrap();
+    assert!(matches!(
+        &*ticket.wait_until(deadline()).unwrap(),
+        RequestOutcome::OutcomeUnknown { failure: Failure::Transport(RpcTransportError::LineTooLong { limit: observed, .. }), .. }
+            if *observed == limit
+    ));
+    app.close();
 }

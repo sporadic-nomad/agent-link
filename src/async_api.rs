@@ -12,13 +12,18 @@
 //!
 //! **Bridging.** One forwarding thread per stream (`agent-link-stream-<id>`;
 //! `agent-link-stream` for [`EventStream::new`]) moves events from the receiver into a
-//! bounded Tokio channel of the receiver's own capacity (1 024; 16 for one added after the
-//! `Exit`). The receive blocks, so it is a thread, not a runtime task, and works whatever
-//! context creates the stream. Back-pressure is kept: a stream nobody reads stalls the
-//! session like an undrained receiver once both are full. Order is kept; the stream ends
-//! (`None`) once the receiver disconnects (teardown; an RPC child's `Exit`) and it was read
-//! to the end. Dropping the stream ends its thread at once, which drops the receiver (the
-//! session prunes it with its next event).
+//! bounded Tokio channel matching the receiver's capacity: PTY receivers hold 1,024 events
+//! (16 for a subscription after `Exit`); RPC receivers default to 8, configurable through
+//! `RpcLimits`. An unbounded receiver uses a 1,024-event bridge buffer, without bounding
+//! the source; a zero-capacity receiver uses a one-event buffer. The receive blocks, so
+//! it is a thread, not a runtime task, and works whatever context creates the stream.
+//! Back-pressure is kept: a stream nobody reads stalls the session like an undrained
+//! receiver once both are full. Order is kept; the stream ends
+//! (`None`) after source disconnection and draining all buffered events. PTY `Exit` does
+//! not disconnect its receivers; teardown does. RPC terminal `Exit` or `Error` disconnects
+//! its receiver, as does teardown; nonterminal `StdinError` does not. Dropping the stream
+//! ends its thread at once, which drops the receiver (the session prunes it with its next
+//! event).
 //!
 //! **No `Stream` trait.** [`EventStream`] has `async fn next` and
 //! [`poll_next`](EventStream::poll_next) rather than `futures::Stream`: that trait lives in
@@ -97,8 +102,7 @@ use crate::error::{Error, Result};
 use crate::rpc::RpcChild;
 use crate::{Event, ExitInfo, Terminal};
 
-/// A stream's capacity when the receiver it bridges is unbounded (a session's receivers
-/// hold 1 024 events).
+/// The bridge buffer capacity for an unbounded source receiver.
 const UNBOUNDED_CAPACITY: usize = 1024;
 
 /// An event receiver as an async stream (feature `tokio`): a session's [`Event`]s (the
@@ -107,9 +111,10 @@ const UNBOUNDED_CAPACITY: usize = 1024;
 /// **Drain it or drop it**, like the receiver it bridges: once the stream and that receiver
 /// are both full, the session stops reading output (an RPC child: its stdout) until there is
 /// room. Dropping it discards what it holds and drops the receiver at once. It ends (`None`)
-/// once the receiver disconnects — the session's teardown, an RPC child's `Exit` or teardown
-/// — and everything was read. One forwarding thread per stream; see the
-/// [module docs](crate::async_api).
+/// after the receiver disconnects and everything was read. PTY `Exit` leaves receivers
+/// connected until teardown. RPC terminal `Exit` or `Error`, and teardown, disconnect
+/// the receiver; `StdinError` leaves output draining. One forwarding thread per stream;
+/// see the [module docs](crate::async_api).
 pub struct EventStream<E = Event> {
     rx: mpsc::Receiver<E>,
     /// Never sent on: dropped with the stream, it wakes the forwarding thread, which ends and
@@ -118,7 +123,9 @@ pub struct EventStream<E = Event> {
 }
 
 impl<E: Send + 'static> EventStream<E> {
-    /// Bridges `rx` into a stream of the same capacity on a new `agent-link-stream` thread.
+    /// Bridges `rx` on a new `agent-link-stream` thread. The Tokio buffer matches a bounded
+    /// receiver's capacity (at least one), or holds 1,024 events for an unbounded receiver.
+    /// This does not impose a bound on an unbounded source.
     /// `rx` is usually one of the crate's receivers: from [`Terminal::spawn`], `subscribe`
     /// or `attach`, `AgentTerminal::spawn`, `RpcChild::spawn`. Bridging the receiver a
     /// `spawn` returned misses nothing from the session's start, which

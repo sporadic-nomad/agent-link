@@ -9,6 +9,12 @@
 //! Profile-based launches retain their existing unattended permission defaults.
 //! See `docs/rpc-and-native-adapters.md#agent-client-protocol-acp` in the public manual
 //! for the supported subset; its validation-evidence section records provenance.
+//!
+//! Once input closure is observed, new ordinary/control requests return
+//! `Transport(crate::Error::Closed)` and approval replies return `StaleApproval`
+//! without consuming their tokens. This is input-only: `snapshot().failure` stays
+//! unset while incoming native responses/events drain. Existing absolute request
+//! and approval deadlines still apply; automatic replies are skipped when unsendable.
 
 mod types;
 pub use types::*;
@@ -59,6 +65,8 @@ struct Offered {
 #[derive(Default)]
 struct State {
     snapshot: Snapshot,
+    // Sticky input-only closure; output continues until its genuine terminal event.
+    input_closed: bool,
     next: u64,
     mutation: bool,
     pending: VecDeque<Pending>,
@@ -331,6 +339,9 @@ impl Shared {
         if let Some(failure) = &state.snapshot.failure {
             return Err(AcpError::Closed(failure.clone()));
         }
+        if state.input_closed {
+            return Err(Error::Closed.into());
+        }
         if deadline <= Instant::now() {
             return Err(Error::InvalidInput("ACP deadline already expired".into()).into());
         }
@@ -345,6 +356,9 @@ impl Shared {
         control: bool,
         deadline: Instant,
     ) -> Result<RequestTicket, AcpError> {
+        if state.input_closed {
+            return Err(Error::Closed.into());
+        }
         let line = encode(&value, self.limits.max_frame_bytes)?;
         let bytes = line.len() + 1;
         crate::protocol::admit(
@@ -394,6 +408,7 @@ impl Shared {
         if offered.nonce != nonce
             || offered.deadline <= Instant::now()
             || state.snapshot.failure.is_some()
+            || state.input_closed
         {
             return Err(AcpError::StaleApproval);
         }
@@ -660,6 +675,11 @@ fn run_loop(
                     match send(&line, deadline) {
                         Ok(receipt) => {
                             let mut state = lock(&shared.state);
+                            if matches!(receipt.status(), RpcWriteStatus::Finished(o) if o != RpcWriteOutcome::Written)
+                            {
+                                state.input_closed = true;
+                                draining = true;
+                            }
                             if let Some(p) =
                                 state
                                     .pending
@@ -671,12 +691,18 @@ fn run_loop(
                             {
                                 p.receipt = Some(receipt);
                             }
+                            if draining {
+                                break;
+                            }
                         }
                         Err(error) => {
                             // Rejected admission emits no bytes; Closed can precede
                             // buffered native responses and the ordered EOF event.
                             {
                                 let mut state = lock(&shared.state);
+                                if matches!(error, Error::Closed) {
+                                    state.input_closed = true;
+                                }
                                 if let Some(p) = state.pending.iter_mut().find(|p| {
                                     match (&p.request, &completion) {
                                         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -701,6 +727,7 @@ fn run_loop(
             recv(incoming) -> event => {
                 let result = match event {
                     Ok(RpcEvent::Line { seq, line, .. }) => ingress(&shared, seq, &line),
+                    Ok(RpcEvent::StdinError { .. }) => { lock(&shared.state).input_closed = true; draining = true; Ok(()) },
                     Ok(RpcEvent::Error { error, .. }) => Err(Failure::Transport(error)),
                     Ok(RpcEvent::Exit { .. }) | Err(_) => Err(Failure::Eof),
                 };
@@ -725,6 +752,8 @@ fn maintenance(shared: &Shared, draining: &mut bool) -> Result<(), Failure> {
         {
             return Err(Failure::ApprovalExpired);
         }
+        *draining |= state.input_closed;
+        let mut observed_failure = false;
         for p in &mut state.pending {
             if p.deadline <= Instant::now() && !p.responded {
                 return Err(Failure::DeadlineExceeded);
@@ -742,6 +771,7 @@ fn maintenance(shared: &Shared, draining: &mut bool) -> Result<(), Failure> {
                 Some(RpcWriteStatus::Finished(RpcWriteOutcome::Written)) => {}
                 Some(RpcWriteStatus::Finished(_)) => {
                     *draining = true;
+                    observed_failure = true;
                     if p.deadline <= Instant::now() {
                         return Err(Failure::WriteFailed);
                     }
@@ -753,6 +783,7 @@ fn maintenance(shared: &Shared, draining: &mut bool) -> Result<(), Failure> {
                 }
             }
         }
+        state.input_closed |= observed_failure;
     }
     for (c, o) in finish {
         c.finish(o);
@@ -848,7 +879,7 @@ fn ingress(shared: &Arc<Shared>, seq: u64, line: &str) -> Result<(), Failure> {
                     request: params,
                 });
                 kind = EventKind::ApprovalRequested;
-            } else {
+            } else if !state.input_closed {
                 shared.enqueue(&mut state,None,Action::Control,json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported reverse method"}}),true,Instant::now()+shared.limits.control_timeout).map_err(|_|Failure::Overloaded)?;
             }
         } else if method == "session/update" {
@@ -995,6 +1026,9 @@ fn ingress(shared: &Arc<Shared>, seq: u64, line: &str) -> Result<(), Failure> {
             // Terminal prompt observation revokes permission authority before the
             // host can start another prompt. Reply cancelled, never implicitly allow.
             for (_, permission) in std::mem::take(&mut state.permissions) {
+                if state.input_closed {
+                    continue;
+                }
                 let frame = json!({"jsonrpc":"2.0","id":permission.id,"result":{"outcome":{"outcome":"cancelled"}}});
                 if shared
                     .enqueue(

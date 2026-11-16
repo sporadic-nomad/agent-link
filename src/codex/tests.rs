@@ -84,22 +84,15 @@ fn rpc_line(app: &CodexAppServer, seq: u64, value: Value) -> crate::rpc::RpcEven
 
 #[test]
 fn failed_receipt_preserves_buffered_native_response_and_terminal_turn() {
-    use crate::rpc::{RpcEvent, RpcStream, RpcTransportError, RpcWriteFailure, RpcWriteOutcome};
+    use crate::rpc::{RpcEvent, RpcWriteFailure, RpcWriteOutcome};
 
     for pipe_error in [false, true] {
         for remote_error in [false, true] {
             let (app, events) = ready(CodexLimits::default());
             lock(&app.shared.state).pending.clear(); // completed setup writes
             let ticket = app.turn_start("x", deadline()).unwrap();
-            let (tx, incoming) = bounded(4);
-            let failure = if pipe_error {
-                Failure::Transport(RpcTransportError::Io {
-                    stream: RpcStream::Stdin,
-                    kind: std::io::ErrorKind::BrokenPipe,
-                })
-            } else {
-                Failure::Eof
-            };
+            let (tx, incoming) = bounded(5);
+            let failure = Failure::Eof;
             let payload = if remote_error {
                 json!({"code":-1,"message":"refused","data":{"future":true}})
             } else {
@@ -121,6 +114,13 @@ fn failed_receipt_preserves_buffered_native_response_and_terminal_turn() {
                         serde_json::from_str::<Value>(line).unwrap()["id"],
                         ticket.id()
                     );
+                    if pipe_error {
+                        tx.try_send(RpcEvent::StdinError {
+                            id: app.generation(),
+                            kind: std::io::ErrorKind::BrokenPipe,
+                        })
+                        .unwrap();
+                    }
                     // Receipt failure is already visible when the dispatcher resumes,
                     // but these native frames precede the transport's terminal event.
                     tx.try_send(rpc_line(
@@ -141,15 +141,9 @@ fn failed_receipt_preserves_buffered_native_response_and_terminal_turn() {
                         }}),
                     ))
                     .unwrap();
-                    tx.try_send(match &failure {
-                        Failure::Transport(error) => RpcEvent::Error {
-                            id: app.generation(),
-                            error: error.clone(),
-                        },
-                        _ => RpcEvent::Exit {
-                            id: app.generation(),
-                            stderr_tail: String::new(),
-                        },
+                    tx.try_send(RpcEvent::Exit {
+                        id: app.generation(),
+                        stderr_tail: String::new(),
                     })
                     .unwrap();
                     Ok(RpcWriteReceipt::finished_for_test(
@@ -1506,4 +1500,194 @@ fn approval_callback_panic_invalid_choice_and_duplicates_never_auto_allow() {
         let frame: Value = serde_json::from_str(reply.line.as_ref().unwrap()).unwrap();
         assert_eq!(frame["result"]["decision"], "decline");
     }
+}
+
+#[test]
+fn input_closure_refuses_host_admissions_without_truncating_native_output() {
+    use crate::rpc::{RpcEvent, RpcWriteFailure, RpcWriteOutcome};
+    // Event notification, immediate failed receipt, refused send, later receipt observation.
+    for source in 0..4 {
+        let (app, events) = ready(CodexLimits::default());
+        lock(&app.shared.state).pending.clear();
+        let ticket = app.turn_start("x", deadline()).unwrap();
+        let token = approval(&app, &events, json!(77));
+        if source == 2 {
+            {
+                let mut state = lock(&app.shared.state);
+                let pending = state.pending.front_mut().unwrap();
+                pending.dispatched = true;
+                pending.receipt =
+                    Some(RpcWriteReceipt::finished_for_test(RpcWriteOutcome::Written));
+            }
+            ingress(
+                &app,
+                json!({"id":66,"method":"unsupported/earlier","params":{}}),
+            );
+            events.recv_until(deadline()).unwrap();
+        }
+        if source == 3 {
+            let mut state = lock(&app.shared.state);
+            let pending = state.pending.front_mut().unwrap();
+            pending.dispatched = true;
+            pending.receipt = Some(RpcWriteReceipt::finished_for_test(
+                RpcWriteOutcome::PossiblyWritten(RpcWriteFailure::Closed),
+            ));
+        }
+        let (tx, incoming) = bounded(8);
+        if source == 0 {
+            tx.send(RpcEvent::StdinError {
+                id: app.generation(),
+                kind: std::io::ErrorKind::BrokenPipe,
+            })
+            .unwrap();
+        }
+        tx.send(rpc_line(
+            &app,
+            100,
+            json!({"method":"future/marker","params":{}}),
+        ))
+        .unwrap();
+        std::thread::scope(|scope| {
+            let app = &app;
+            let ticket = &ticket;
+            scope.spawn(move || {
+                assert_eq!(events.recv_until(deadline()).unwrap().seq, 100);
+                assert!(app.failure().is_none());
+                let before = {
+                    let state = lock(&app.shared.state);
+                    (state.next_id, state.pending.iter().map(|p| (p.deadline, p.bytes)).collect::<Vec<_>>(), state.approvals.len())
+                };
+                assert!(matches!(
+                    app.turn_interrupt("a", deadline()),
+                    Err(CodexError::Transport(Error::Closed))
+                ));
+                assert!(matches!(
+                    app.turn_steer("a", "later", deadline()),
+                    Err(CodexError::Transport(Error::Closed))
+                ));
+                assert!(matches!(
+                    token.respond(json!("decline")),
+                    Err(CodexError::StaleApproval)
+                ));
+                assert!(matches!(
+                    token.respond(json!("decline")),
+                    Err(CodexError::StaleApproval)
+                ));
+                {
+                    let state = lock(&app.shared.state);
+                    assert_eq!(
+                        (state.next_id, state.pending.iter().map(|p| (p.deadline, p.bytes)).collect::<Vec<_>>(), state.approvals.len()),
+                        before
+                    );
+                }
+                // Approvals can arrive after closure; their native events still survive.
+                tx.send(rpc_line(app, 101, json!({"id":78,"method":"item/commandExecution/requestApproval",
+                    "params":{"threadId":"t","turnId":"a","itemId":"late","availableDecisions":["decline"]}}))).unwrap();
+                let late = events.recv_until(deadline()).unwrap().approval.unwrap();
+                let retained = lock(&app.shared.state).approvals.len();
+                assert!(matches!(late.respond(json!("decline")), Err(CodexError::StaleApproval)));
+                assert_eq!(lock(&app.shared.state).approvals.len(), retained);
+                tx.send(rpc_line(
+                    app,
+                    102,
+                    json!({"id":88,"method":"unsupported/reverse","params":{}}),
+                ))
+                .unwrap();
+                tx.send(rpc_line(
+                    app,
+                    103,
+                    json!({"id":ticket.id(),"result":{"turn":{"id":"a","status":"completed"}}}),
+                ))
+                .unwrap();
+                // A native response remains authoritative even though no new input is admitted.
+                let outcome = ticket.wait_until(deadline()).unwrap();
+                assert!(
+                    matches!(&*outcome, RequestOutcome::Response(_)),
+                    "source {source}: {outcome:?}"
+                );
+                assert!(app.failure().is_none());
+                assert!(matches!(app.turn_start("after completion", deadline()), Err(CodexError::Transport(Error::Closed))));
+                assert!(lock(&app.shared.state).pending.iter().filter(|p| p.control).count() <= usize::from(source == 2), "draining must not enqueue automatic controls");
+                tx.send(RpcEvent::Exit {
+                    id: app.generation(),
+                    stderr_tail: String::new(),
+                })
+                .unwrap();
+            });
+            driver::run_loop(
+                Arc::clone(&app.shared),
+                incoming,
+                crossbeam_channel::never(),
+                |_, _| match source {
+                    0 => Ok(RpcWriteReceipt::finished_for_test(RpcWriteOutcome::Written)),
+                    1 => Ok(RpcWriteReceipt::finished_for_test(
+                        RpcWriteOutcome::PossiblyWritten(RpcWriteFailure::Closed),
+                    )),
+                    2 => Err(Error::Closed),
+                    _ => panic!("maintenance must stop dispatch"),
+                },
+            );
+        });
+        assert_eq!(app.failure(), Some(Failure::Eof));
+    }
+}
+
+#[test]
+fn input_closure_skips_initialized_notification_after_late_initialize_response() {
+    use crate::rpc::{RpcEvent, RpcWriteFailure, RpcWriteOutcome};
+    let (app, events) = harness(CodexLimits::default());
+    let ticket = app.initialize("test", "1", deadline()).unwrap();
+    let (tx, incoming) = bounded(4);
+    tx.send(RpcEvent::StdinError {
+        id: app.generation(),
+        kind: std::io::ErrorKind::BrokenPipe,
+    })
+    .unwrap();
+    tx.send(rpc_line(
+        &app,
+        1,
+        json!({"id":ticket.id(),"result":{"userAgent":"fixture"}}),
+    ))
+    .unwrap();
+    tx.send(rpc_line(
+        &app,
+        2,
+        json!({"method":"future/marker","params":{}}),
+    ))
+    .unwrap();
+    let mut writes = 0;
+    std::thread::scope(|scope| {
+        let app = &app;
+        scope.spawn(move || {
+            assert_eq!(events.recv_until(deadline()).unwrap().seq, 2);
+            assert!(app.failure().is_none());
+            assert!(
+                !lock(&app.shared.state).pending.iter().any(|p| p.control),
+                "closed input must not register initialized notification or its deadline"
+            );
+            tx.send(RpcEvent::Exit {
+                id: app.generation(),
+                stderr_tail: String::new(),
+            })
+            .unwrap();
+        });
+        driver::run_loop(
+            Arc::clone(&app.shared),
+            incoming,
+            crossbeam_channel::never(),
+            |_, _| {
+                writes += 1;
+                Ok(RpcWriteReceipt::finished_for_test(
+                    RpcWriteOutcome::PossiblyWritten(RpcWriteFailure::Closed),
+                ))
+            },
+        );
+    });
+    assert_eq!(writes, 1);
+    assert!(matches!(
+        &*ticket.outcome().unwrap(),
+        RequestOutcome::Response(_)
+    ));
+    assert!(app.snapshot().initialized);
+    assert_eq!(app.failure(), Some(Failure::Eof));
 }

@@ -122,7 +122,7 @@ for (id, report) in &reports {
 ### Three-Way Sign-In Semantics (`ProbeResult`)
 
 `ProbeResult { installed: bool, signed_in: Option<bool> }`:
-- `installed`: `true` if a configured launcher answered `--version` with exit code `0`.
+- `installed`: `true` if a configured launcher answered `--version` with exit code `0`. A legacy `false` is inconclusive when the probe could not run. If the host working directory cannot be read, detailed reports retain `RuntimeReadiness::Untested` and `ContextDiagnostic::WorkingDirectoryUnavailable`; no commands run. Supply an explicit absolute `ProbeOptions::cwd` to avoid depending on that directory.
 - `signed_in`:
   - `Some(true)`: the profile's `login_check` command exited `0`.
   - `Some(false)`: the login check exited non-zero **and** its output matched `signed_out_marker`.
@@ -141,4 +141,4 @@ for (id, report) in &reports {
 ## Diagnostic Tracing & Privacy
 
 - **PTY Agent Controller:** logs `[agent-link:<id>]` trace lines at `info` when `AgentSpec::trace` is `Some(true)`, or when `None` and `AGENT_LINK_TRACE=1` or `cfg!(debug_assertions)`.
-- **RPC & Native Adapters:** `RpcSpawnSpec::trace` defaults to `false`. Enabling it (`true`) logs payloads, stderr, and command arguments (truncated to 400 chars). Leave `false` in production unless diagnosing wire traffic in a safe environment.
+- **RPC & Native Adapters:** `RpcSpawnSpec::trace` and `trace_stderr` default to `false`. `trace: true` logs payloads, stderr, and command arguments (truncated to 400 chars). `trace_stderr: true` logs stderr alone; it does not enable argument, stdin or stdout logging. Stderr may contain secrets with either opt-in; leave both disabled unless needed for diagnosis.

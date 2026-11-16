@@ -58,6 +58,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 Available async APIs:
 - `EventStream::new(rx)` / `term.events_stream()`: bridges a bounded receiver into a matching-capacity `tokio::sync::mpsc` channel using one forwarding thread (`"agent-link-stream"` / `"agent-link-stream-<id>"`). Exposes cancel-safe `next().await` and `poll_next(cx)` (implements `Unpin` so hosts can adapt to `futures::Stream`). Dropping `EventStream` stops its forwarding thread immediately.
+  PTY capacities are 1,024 events (16 after `Exit`); RPC defaults to 8 configurable events. An unbounded source gets a 1,024-event Tokio buffer but remains unbounded; a rendezvous source gets one slot. Streams end only after source disconnection and draining: PTY `Exit` leaves the source connected until teardown, while RPC terminal `Exit` or `Error` disconnects it. RPC `StdinError` leaves output draining.
 - `ticket.outcome().await -> DeliveryOutcome` (`agent` feature): zero-thread wakeup via `Notify`; cancel-safe.
 - `agent_term.send_async(text, opts)`: queues the delivery synchronously on call, then awaits `ticket.outcome()`. (Does not support `Revalidate::Handshake` — use `send()` + `confirm()` + `ticket.outcome()` instead.)
 - `kill_async(self)`: available on `Terminal`, `AgentTerminal`, and `RpcChild` (`rpc` feature). Spawns teardown immediately on `tokio::task::spawn_blocking` (does not wait for first `.await`).

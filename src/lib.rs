@@ -4,7 +4,7 @@
 //! headless sessions provide bounded line transport or an optional native Codex adapter.
 //! No UI or host-framework dependency: applications own rendering.
 //!
-//! Version 0.1.0. Before 1.0, minor releases may introduce breaking API changes.
+//! Version 0.1.1. Before 1.0, minor releases may introduce breaking API changes.
 //!
 //! # Start here
 //!

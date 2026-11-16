@@ -63,7 +63,9 @@ use crate::screen::catch_panic;
 /// for a CLI that is installed but signed out sends the user to reinstall it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ProbeResult {
-    /// A launcher answered `--version` with exit 0.
+    /// A launcher answered `--version` with exit 0. `false` means no successful
+    /// check, not proof that the CLI is absent. Use [`ProbeReport::readiness`]
+    /// and diagnostics to distinguish missing launchers from untested contexts.
     pub installed: bool,
     /// `Some(true)` signed in, `Some(false)` signed out — only when the profile's own check
     /// said so. `None` is unknown (no check, not installed, an inconclusive run): treat it as
@@ -81,7 +83,9 @@ pub struct ProbeResult {
 /// inheritance). Shell startup files can override it. Use detailed direct mode when
 /// matching a direct spawn. Sign-in stays unknown for absent/failed/inconclusive checks.
 /// A panicking profile or unavailable worker maps to the historical default result;
-/// detailed reports preserve those failures. Panicking `id()` callbacks are skipped.
+/// detailed reports preserve those failures. An unreadable host working directory also
+/// maps to the default result; detailed reports retain `Untested` readiness and
+/// [`ContextDiagnostic::WorkingDirectoryUnavailable`]. Panicking `id()` callbacks are skipped.
 /// Logs use `[probe-agents]`; version/login payloads and environment values are not logged.
 pub fn probe_agents(
     profiles: &[Arc<dyn AgentProfile>],
