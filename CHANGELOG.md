@@ -17,7 +17,8 @@ The first release.
   natural-output-EOF event contract is unchanged.
 
 - Corrected native test fixtures for Linux Bash startup and Windows ACP paths and
-  PTY events, preserving the delivery and process-lifecycle assertions.
+  PTY events, and synchronized delayed receipt displays and shell interrupt handling,
+  preserving the delivery and process-lifecycle assertions.
 
 - Fixed newer Rust CI builds for the HTTP crate with a scoped deprecation allowance,
   preserving Rust 1.85 support and runtime behavior.
