@@ -290,6 +290,7 @@ impl Drop for Charge<'_> {
     }
 }
 fn send(stream: &mut TcpStream, s: &Shared, bytes: &[u8]) -> io::Result<()> {
+    #[allow(deprecated, reason = "try_update is unavailable on the Rust 1.85 MSRV")]
     s.active
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
             n.checked_add(bytes.len())
@@ -397,6 +398,7 @@ fn output_frame(
 }
 fn serve(mut stream: TcpStream, s: &Shared) -> io::Result<()> {
     let scratch_slot = s.config.frame_bytes + s.config.projection_bytes + s.config.header_bytes;
+    #[allow(deprecated, reason = "try_update is unavailable on the Rust 1.85 MSRV")]
     s.scratch
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
             n.checked_add(scratch_slot)
