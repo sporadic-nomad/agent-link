@@ -72,6 +72,16 @@ const LEGACY_HINTS: &[&str] = &["type a message", "press enter", "ctrl+c"];
 pub struct OpencodeProfile;
 
 impl AgentProfile for OpencodeProfile {
+    #[cfg(feature = "tools")]
+    fn mcp_backend(
+        &self,
+        transport: crate::tools::ToolTransport,
+    ) -> Option<crate::tools::McpBackend> {
+        match transport {
+            crate::tools::ToolTransport::Rpc => Some(crate::tools::McpBackend::Acp),
+            crate::tools::ToolTransport::Pty => None,
+        }
+    }
     fn compatibility(&self) -> crate::agent::compatibility::Compatibility {
         use crate::agent::compatibility::{Compatibility, Evidence, EvidenceKind, Support};
         Compatibility {

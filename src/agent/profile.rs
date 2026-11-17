@@ -207,6 +207,10 @@ pub struct RpcLaunch {
     pub env: Vec<(String, String)>,
     /// Variables set only when the host's env policy does not set the key.
     pub env_defaults: Vec<(String, String)>,
+    /// Optional tool configuration and its shared temporary-file lifetime. Constructors
+    /// default to `None`. Keep this attached when forwarding a prepared launch.
+    #[cfg(feature = "tools")]
+    pub tools: Option<crate::tools::ToolAttachment>,
 }
 
 impl RpcLaunch {
@@ -217,6 +221,8 @@ impl RpcLaunch {
             args: args.iter().map(|a| a.to_string()).collect(),
             env: Vec::new(),
             env_defaults: Vec::new(),
+            #[cfg(feature = "tools")]
+            tools: None,
         }
     }
 
@@ -253,6 +259,10 @@ impl RpcLaunch {
     /// Unix login-shell startup files can subsequently change the child's environment.
     pub fn merge_env_into(&self, policy: &mut EnvPolicy) {
         merge_launch_env(policy, &self.env_defaults, &self.env);
+        #[cfg(feature = "tools")]
+        if let Some(tools) = &self.tools {
+            tools.apply_path(policy);
+        }
     }
 }
 
@@ -289,6 +299,17 @@ impl fmt::Debug for RpcLaunch {
 /// session (`NotConnected`) while the host's raw terminal stream remains available.
 /// Metadata and launch callbacks run synchronously before a child is spawned.
 pub trait AgentProfile: Send + Sync {
+    /// Per-run MCP configuration supported by this profile and transport. This is a
+    /// configuration mapping, not evidence that an installed CLI connected successfully.
+    /// Custom profiles opt in explicitly; the default never guesses from a profile ID.
+    #[cfg(feature = "tools")]
+    fn mcp_backend(
+        &self,
+        _transport: crate::tools::ToolTransport,
+    ) -> Option<crate::tools::McpBackend> {
+        None
+    }
+
     /// The agent's id (`claude`, `codex`, …).
     fn id(&self) -> &str;
 

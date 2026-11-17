@@ -148,6 +148,9 @@ pub struct AgentTerminal {
     ctl: Arc<Controller>,
     /// Serializes ticket assignment through enqueue, without holding the state lock.
     queueing: Mutex<()>,
+    // Dropped after the terminal; never run filesystem cleanup under controller locks.
+    #[cfg(feature = "tools")]
+    _tools: Option<crate::tools::ToolAttachment>,
 }
 
 impl AgentTerminal {
@@ -165,18 +168,97 @@ impl AgentTerminal {
     /// `cmd.exe` would expand), or when admission limits are invalid — before anything starts;
     /// [`Error::Spawn`](crate::Error::Spawn) when a controller thread cannot start (the
     /// session is torn down).
-    pub fn spawn(
+    pub fn spawn(spec: SpawnSpec, agent: AgentSpec) -> Result<(AgentTerminal, Receiver<Event>)> {
+        Self::spawn_prepared(spec, agent, None)
+    }
+
+    /// Starts a PTY agent with consumer-owned CLI/MCP tools scoped to this launch.
+    /// Preserves the profile's permissions, trust and screen handling. Preparation
+    /// validates descriptors and may write private temporary configuration files;
+    /// it does not start a server or contact an agent. Unsupported MCP mappings fail
+    /// before spawn. In Direct mode tool arguments are appended to the host's explicit
+    /// argv; profile permission/trust arguments are still not added, matching ordinary
+    /// Direct launches. Tool-configured Direct argv must be UTF-8. Unix login-shell
+    /// startup files may change the child environment in Shell mode.
+    #[cfg(feature = "tools")]
+    pub fn spawn_with_tools(
+        spec: SpawnSpec,
+        agent: AgentSpec,
+        tools: &crate::tools::AgentTools,
+    ) -> Result<(AgentTerminal, Receiver<Event>)> {
+        let profile = agent
+            .profile
+            .as_ref()
+            .ok_or_else(|| crate::Error::InvalidInput("tools require an agent profile".into()))?;
+        agent.limits.validate()?;
+        let plan = if let SpawnMode::Direct { program, args } = &spec.mode {
+            let mut launch = super::LaunchPlan::new(program.to_str().ok_or_else(|| {
+                crate::Error::InvalidInput("tool-configured executable must be UTF-8".into())
+            })?);
+            launch.args = args
+                .iter()
+                .map(|arg| {
+                    arg.to_str().map(str::to_owned).ok_or_else(|| {
+                        crate::Error::InvalidInput("tool-configured arguments must be UTF-8".into())
+                    })
+                })
+                .collect::<Result<_>>()?;
+            // Ordinary Direct launches still inherit the profile's launch environment.
+            let defaults = profile.launch(
+                &agent.permissions,
+                &agent.trust,
+                &spec.cwd,
+                ShellKind::native(),
+            );
+            if defaults.tools.is_some() {
+                return Err(crate::Error::InvalidInput(
+                    "profile already has tool attachments".into(),
+                ));
+            }
+            launch.env = defaults.env;
+            launch.env_defaults = defaults.env_defaults;
+            tools.configure_pty(profile.as_ref(), launch)?
+        } else {
+            tools.pty_launch(
+                profile.as_ref(),
+                &agent.permissions,
+                &agent.trust,
+                &spec.cwd,
+                ShellKind::native(),
+            )?
+        };
+        Self::spawn_prepared(spec, agent, Some(plan))
+    }
+
+    fn spawn_prepared(
         mut spec: SpawnSpec,
         agent: AgentSpec,
+        prepared: Option<super::LaunchPlan>,
     ) -> Result<(AgentTerminal, Receiver<Event>)> {
         agent.limits.validate()?;
         spec.screen.enabled = true;
         let direct = matches!(spec.mode, SpawnMode::Direct { .. });
         let shell = ShellKind::native();
         let mut launch_line = None;
+        #[cfg(feature = "tools")]
+        let mut tool_attachment = None;
         if let Some(profile) = &agent.profile {
-            let plan = profile.launch(&agent.permissions, &agent.trust, &spec.cwd, shell);
+            if direct {
+                if let Some(plan) = &prepared {
+                    spec.mode = SpawnMode::Direct {
+                        program: plan.program.clone().into(),
+                        args: plan.args.iter().map(Into::into).collect(),
+                    };
+                }
+            }
+            let plan = prepared.unwrap_or_else(|| {
+                profile.launch(&agent.permissions, &agent.trust, &spec.cwd, shell)
+            });
             plan.merge_env_into(&mut spec.env);
+            #[cfg(feature = "tools")]
+            {
+                tool_attachment = plan.tools.clone();
+            }
             if !direct {
                 let line = plan.command_line(shell)?;
                 launch_line = Some(format!("{line}{}", shell.line_terminator()));
@@ -229,6 +311,8 @@ impl AgentTerminal {
             term,
             ctl,
             queueing: Mutex::new(()),
+            #[cfg(feature = "tools")]
+            _tools: tool_attachment,
         };
         // On an error `agent_term` drops: the controller is disposed, the session torn down.
         drop(monitor::spawn(
@@ -677,6 +761,8 @@ mod limit_tests {
                 term,
                 ctl,
                 queueing: Mutex::new(()),
+                #[cfg(feature = "tools")]
+                _tools: None,
             },
             events,
         )

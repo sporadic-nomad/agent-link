@@ -2,6 +2,11 @@
 
 This chapter covers structured stdio integrations: the generic line transport (`rpc`), versioned portable events (`portable`), the three bounded native adapters (`codex`, `acp`, `claude`), and opt-in approval callbacks (`approvals`).
 
+To attach your application's own CLI commands or MCP servers without global installation
+or configuration, enable the optional [application tools facade](application-tools.md).
+It prepares the `RpcLaunch` passed to these transports; the application still implements
+its tools and server lifecycle.
+
 **Prev:** [Permissions & Probes](permissions-and-probes.md) · **Next:** [Async & Presentation](async-and-presentation.md)
 
 ---
@@ -162,6 +167,10 @@ Enable `acp` (implies `rpc`, adds `serde_json`). Implements a bounded **stable-v
 A completed prompt ticket can coexist with unread text events. When displaying the
 answer, continue draining through that prompt's matching response event, then check the
 ticket outcome. Keep a finite deadline and report stream failure or timeout.
+
+With `tools`, attached MCP definitions are included in session new/load/resume requests.
+HTTP definitions require the initialized agent's `mcpCapabilities.http`; unadvertised
+support is refused before admission. Without attachments the MCP list remains empty.
 
 ---
 

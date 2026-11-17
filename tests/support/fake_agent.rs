@@ -71,6 +71,9 @@ mod codex_peer;
 mod input;
 #[path = "fake_agent/scenes.rs"]
 mod scenes;
+#[cfg(feature = "tools")]
+#[path = "fake_agent/tools_peer.rs"]
+mod tools_peer;
 #[cfg(unix)]
 #[path = "fake_agent/tty_unix.rs"]
 mod tty;
@@ -97,6 +100,11 @@ const PROGRESS_FOR: Duration = Duration::from_millis(400);
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 fn main() {
+    #[cfg(feature = "tools")]
+    if std::env::args().nth(1).as_deref() == Some("--tool-launch-peer") {
+        tools_peer::run();
+        return;
+    }
     #[cfg(feature = "acp")]
     if std::env::args().nth(1).as_deref() == Some("--acp-peer") {
         acp_peer::run(&std::env::args().nth(2).expect("peer scenario"));

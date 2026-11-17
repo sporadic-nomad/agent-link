@@ -29,9 +29,21 @@ pub(super) fn run(scene: &str) {
                 if scene == "version" {
                     initialized["protocolVersion"] = json!(2);
                 }
+                if scene == "tools" {
+                    initialized["agentCapabilities"]["mcpCapabilities"] = json!({"http":true});
+                }
                 response(&request, initialized);
             }
-            Some("session/new") => response(&request, json!({"sessionId":"s"})),
+            Some("session/new") => {
+                if scene == "tools" {
+                    response(
+                        &request,
+                        json!({"sessionId":"s","receivedMcp":request["params"]["mcpServers"]}),
+                    );
+                } else {
+                    response(&request, json!({"sessionId":"s"}));
+                }
+            }
             Some("session/load" | "session/resume") => {
                 assert_eq!(request["params"]["sessionId"], "s");
                 update("history");

@@ -14,7 +14,7 @@ The crate has no UI and no host-framework dependency: a desktop app, a TUI or a 
 harness renders the byte stream itself and drives the agent through a synchronous,
 thread-backed API. Async adapters for Tokio sit behind a feature.
 
-**Version: 0.1.1.** A standalone library for desktop apps, TUIs, services and
+**Version: 0.2.0.** A standalone library for desktop apps, TUIs, services and
 test harnesses. Before 1.0, minor releases may introduce breaking API changes. See the
 [user manual](docs/README.md) for usage guides, or
 [release preparation](CONTRIBUTING.md#release-preparation) for publication requirements.
@@ -33,6 +33,7 @@ sandbox. Configure `Permissions::AgentDefault` to use the CLI's policy, or
 | `env`, `shell`, `identity`, `resolve`, `proc` | always | The child's environment policy, login-shell argv, the `TERM` identity a child sees, `PATH`/`PATHEXT` launcher lookup, process-tree kill and timeout runners. |
 | `screen` | `screen` (default) | A headless terminal (`vt100`) fed every chunk before any receiver gets it: rows, cursor, modes; title, OSC 9;4 progress and sync-frame events. Answers terminal queries unless your renderer does. |
 | `agent` (`AgentTerminal`) | `agent` (default) | Built-in profiles for five CLIs. Types the launch line, answers startup dialogs, reports readiness and activity, delivers messages one at a time with a verified Enter; strict delivery, a commit-point check, reset. |
+| `tools` (`AgentTools`) | `tools` | Attaches consumer-owned CLI commands and MCP connections to one run, with child PATH/environment, provider configuration and temporary-file ownership. [Guide](docs/application-tools.md). |
 | `rpc` (`RpcChild`) | `rpc` | An agent CLI headless over stdio: one event per stdout line, a stderr tail, process-group teardown. |
 | `acp` (`AcpClient`) | `acp` | Optional bounded stable-v1 ACP adapter: strict session restore, text prompts, cooperative cancel and origin-bound permissions. [Guide](docs/rpc-and-native-adapters.md#agent-client-protocol-acp). |
 | `claude` (`ClaudeSession`) | `claude` | Optional persistent Claude stream-json sessions: initialize, bounded user/control writes, results, explicit resume binding and single-use approval tokens. [Guide](docs/rpc-and-native-adapters.md#claude-stream-json-claude). |
@@ -43,6 +44,11 @@ sandbox. Configure `Permissions::AgentDefault` to use the CLI's policy, or
 | `transcript` (`Projector`) | `transcript` | Bounded presentation projection with native/raw provenance and explicit gaps; never delivery or completion authority. [Guide](docs/async-and-presentation.md#transcript-projection-transcript-feature). |
 | `observers` (`ObserverHub`) | `observers` | Bounded raw PTY observer fanout, replay/live fences and explicit slow-viewer disconnects. [Guide](docs/async-and-presentation.md#pty-observer-fanout-observers-feature). |
 | `async_api` (`EventStream`) | `tokio` | Event streams, awaitable tickets, `send_async`, `kill_async`. Uses Tokio's `sync` and `rt` only. |
+
+The `tools` facade validates MCP HTTP hosts, ports and IPv6 syntax before launch. It also
+rejects Pi MCP environment/header templates and CLI directories that need PATH escaping,
+including semicolons on Windows. See its
+[validation rules](docs/application-tools.md#ownership-validation-and-limits).
 
 `Terminal::attach_recovery` adds session-bound byte cursors, explicit replay gaps,
 current geometry and an optional display snapshot at the replay/live boundary.
@@ -63,10 +69,11 @@ Add the crate from crates.io:
 
 ```toml
 [dependencies]
-agent-link = "0.1" # screen + agent
-# agent-link = { version = "0.1", default-features = false }
-# agent-link = { version = "0.1", features = ["rpc", "probe", "tokio"] }
+agent-link = "0.2" # screen + agent
+# agent-link = { version = "0.2", default-features = false }
+# agent-link = { version = "0.2", features = ["rpc", "probe", "tokio"] }
 # Optional native/presentation features: "acp", "claude", "codex", "approvals", "observers", "transcript"
+# Add "tools" for application CLI/MCP attachments.
 ```
 
 For development, use `{ path = "../agent-link" }` or
@@ -78,6 +85,7 @@ The three examples quoted below live in [`examples/`](examples/);
 `tests/readme.rs` checks their excerpts. Additional examples in [`examples/`](examples/)
 include:
 - Offline/local: [`custom_profile`](examples/custom_profile.rs) (default features),
+  [`application_tools`](examples/application_tools.rs) (`--features tools`; prepares CLI/MCP attachments without starting an agent),
   [`probe_agents`](examples/probe_agents.rs) (`--features probe`),
   [`tokio_shell`](examples/tokio_shell.rs) (`--no-default-features --features tokio`),
   [`pty_recovery_observers`](examples/pty_recovery_observers.rs) (`--features "screen,observers,transcript"`),

@@ -34,6 +34,61 @@ fn result(ticket: RequestTicket) {
         RequestOutcome::Response(_)
     ));
 }
+
+#[cfg(feature = "tools")]
+#[test]
+fn prepared_tools_reach_the_native_child_session_request() {
+    use agent_link::tools::{AgentTools, McpBackend, McpServer};
+    let home = tempfile::tempdir().unwrap();
+    let launch = AgentTools::new()
+        .with_mcp(
+            McpServer::stdio("my_app", common::fake_agent_path())
+                .arg("context")
+                .env("APP_ENDPOINT", "synthetic-endpoint"),
+        )
+        .with_mcp(
+            McpServer::http("my_http", "http://127.0.0.1:9123/mcp")
+                .header("Authorization", "synthetic-token"),
+        )
+        .configure_rpc(
+            McpBackend::Acp,
+            RpcLaunch::new(
+                common::fake_agent_path().to_str().unwrap(),
+                &["--acp-peer", "tools"],
+            ),
+        )
+        .unwrap();
+    let expected = launch
+        .tools
+        .as_ref()
+        .unwrap()
+        .acp_servers()
+        .unwrap()
+        .clone();
+    let mut spec = RpcSpawnSpec::new(launch, home.path());
+    spec.shell = Some("/bin/sh".into());
+    spec.env.inherit = false;
+    spec.env
+        .set("HOME", home.path())
+        .set("USERPROFILE", home.path())
+        .set("PATH", std::env::var_os("PATH").unwrap_or_default());
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        spec.env.set("SystemRoot", root);
+    }
+    let (app, events) = AcpClient::spawn(spec, AcpLimits::default()).unwrap();
+    result(app.initialize("fixture", "1", deadline()).unwrap());
+    let ticket = app
+        .session_new(home.path().to_str().unwrap(), deadline())
+        .unwrap();
+    let outcome = ticket.wait_until(deadline()).expect("session response");
+    match &*outcome {
+        RequestOutcome::Response(value) => assert_eq!(value["receivedMcp"], expected),
+        other => panic!("unexpected session result: {other:?}"),
+    }
+    drop(events);
+    app.close();
+}
 fn ready(scene: &str) -> (tempfile::TempDir, AcpClient, AcpEvents) {
     let (temp, app, events) = spawn(scene);
     result(app.initialize("fixture", "1", deadline()).unwrap());

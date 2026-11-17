@@ -1,6 +1,6 @@
 [package]
 name = "agent-link"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 # Minimum supported Rust version; checked separately in CI.
 rust-version = "1.85"
@@ -22,7 +22,7 @@ resolver = "3"
 # docs.rs documents the default features only unless told otherwise; `codex`, `claude`, `rpc`, `probe` and
 # `tokio` items must show too.
 [package.metadata.docs.rs]
-features = ["acp", "claude", "codex", "rpc", "probe", "tokio", "observers", "transcript", "approvals"]
+features = ["acp", "claude", "codex", "rpc", "probe", "tokio", "observers", "transcript", "approvals", "tools"]
 
 [features]
 default = ["screen", "agent"]
@@ -34,6 +34,8 @@ test-support = []
 screen = ["dep:vt100", "dep:regex"]
 # Agent profiles and the delivery controller; detection reads the screen model.
 agent = ["screen"]
+# Per-run attachment of consumer-owned CLI tools and MCP connections.
+tools = ["agent", "dep:serde_json", "dep:tempfile", "dep:url"]
 # Stdio line transport for agents that speak JSON over stdin/stdout.
 rpc = ["agent"]      # RpcLaunch comes from AgentProfile::rpc_launch
 # Bounded, owned-stdio Codex app-server v2 protocol pilot.
@@ -66,6 +68,10 @@ log = "0.4"
 thiserror = "2"
 # Native protocol data only; no vendor SDK or async runtime.
 serde_json = { version = "1", optional = true }
+# Private, automatically removed per-run tool configuration files; MSRV 1.63.
+tempfile = { version = "3.10", optional = true }
+# `tools`: endpoint URL parsing only; no network client or runtime.
+url = { version = "2.5.8", optional = true }
 # `screen`: the headless emulator fed the same bytes the host's renderer gets.
 vt100 = { version = "0.16", optional = true }
 # `screen` (text normalisation) and `agent` (screen markers): 1:1 ports of the JavaScript regexes they replace.
@@ -192,6 +198,10 @@ required-features = ["screen", "observers", "transcript"]
 name = "custom_profile"
 required-features = ["agent"]
 
+[[example]]
+name = "application_tools"
+required-features = ["tools"]
+
 [[test]]
 name = "acp_adapter"
 required-features = ["acp", "test-support"]
@@ -203,3 +213,7 @@ required-features = ["claude", "test-support"]
 [[test]]
 name = "example_behaviors"
 required-features = ["acp", "claude", "observers", "transcript", "test-support"]
+
+[[test]]
+name = "tool_attachments"
+required-features = ["tools", "rpc", "test-support"]

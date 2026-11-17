@@ -6,6 +6,42 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-11-17
+
+### Fixed
+
+- MCP HTTP URLs now validate parsed host, port and IPv6 syntax before configuration
+  rendering or child spawn. Malformed endpoints return `InvalidInput`; existing userinfo,
+  whitespace and fragment restrictions remain. Parsing preserves valid URL text and does
+  not resolve DNS or connect. The optional `tools` feature now includes the `url` parser.
+- Pi MCP attachment validation also rejects bare `$NAME`, `$$` and `$!` forms in
+  environment and header values, preventing native interpolation or escape decoding
+  from changing literal values. Ordinary dollar signs remain supported.
+- CLI attachments reject directories requiring PATH escaping, including semicolons on
+  Windows: successful `join_paths` encoding is insufficient when EnvPolicy prepends the
+  original directory verbatim. Existing generic EnvPolicy behavior is unchanged.
+
+### Added
+
+- Optional `tools` facade with `AgentTools`, `CliTool` and `McpServer`: application-owned
+  commands on child PATH, explicit CLI discovery instructions, and per-run stdio/HTTP
+  MCP configuration without global installation or configuration edits. Supports Codex,
+  Claude, Pi's `registerMcpServer` extension API and ACP; OpenCode PTY and Cursor MCP
+  attachments are explicitly unsupported. `AgentTerminal::spawn_with_tools` and prepared
+  `RpcLaunch` values retain temporary configuration through process teardown.
+- ACP new/load/resume includes attached MCP definitions; unadvertised HTTP capability
+  is rejected before session admission. Existing unattached sessions keep empty MCP lists.
+- Bounded validation, private Unix configuration permissions, redacted descriptor Debug,
+  and explicit additive/exclusive policy (exclusive currently Claude only). The host still
+  owns tool/server implementation, endpoint lifecycle and authorization. Offline macOS
+  tests cover launch, configuration and cleanup; no new live vendor validation is claimed.
+
+### Changed
+
+- Enabling `tools` adds `tools: Option<ToolAttachment>` to `RpcLaunch` and `LaunchPlan`.
+  Constructors default to `None`; full `RpcLaunch` struct literals need this field. Preserve it
+  when forwarding a prepared launch. Existing defaults and permission policies are unchanged.
+
 ## [0.1.1] — 2026-11-17
 
 ### Changed

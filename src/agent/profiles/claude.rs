@@ -170,6 +170,10 @@ fn is_menu_row(chrome: &str) -> bool {
 }
 
 impl AgentProfile for ClaudeProfile {
+    #[cfg(feature = "tools")]
+    fn mcp_backend(&self, _: crate::tools::ToolTransport) -> Option<crate::tools::McpBackend> {
+        Some(crate::tools::McpBackend::Claude)
+    }
     fn compatibility(&self) -> crate::agent::compatibility::Compatibility {
         use crate::agent::compatibility::{Compatibility, Evidence, EvidenceKind, Support};
         Compatibility {

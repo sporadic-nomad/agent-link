@@ -10,7 +10,9 @@ The public `portable` module exposes versioned native-event projections (current
 `codex`, `acp` and `claude`); provider mappings and approval capabilities remain adapter-specific.
 Profiles expose operation-scoped compatibility evidence; optional probe reports keep
 runtime readiness and launch-context limitations separate from those declarations.
-The library has no UI or host-framework dependency.
+The library has no UI or host-framework dependency. Optional `tools` prepares per-run
+consumer-owned CLI/MCP attachments and owns temporary configuration through child
+teardown; consumers still implement tools, IPC and server lifecycle.
 
 PTY recovery attachments expose process-local byte cursors, loss ranges and geometry;
 optional display snapshots are fenced to output but are not parser checkpoints.
@@ -31,7 +33,7 @@ does not share the daemon mutation IPC. Supervisor builds require a C compiler f
 - Rust 2024, minimum Rust version 1.85, MIT license. Check `Cargo.toml` for the current
   version and feature definitions.
 - Default features: `screen` and `agent`. Optional integrations: `rpc`, `codex`, `acp`,
-  `claude`, `probe`, `tokio`, `transcript`, `observers` and `approvals`. `test-support`
+  `claude`, `probe`, `tools`, `tokio`, `transcript`, `observers` and `approvals`. `test-support`
   is development-only and enables `agent-link-fake-agent`.
 - PTY/process operations use dedicated threads. Tokio provides optional adapters;
   keep the core usable without an async runtime.
@@ -104,6 +106,7 @@ that merely reproduce an implementation expression or unnecessarily expose priva
 | RPC framing, errors or privacy | `src/rpc/tests.rs`, framing/input unit tests, `tests/rpc_roundtrip.rs` |
 | Native adapter lifecycle or protocol | `src/codex/tests.rs`, `tests/codex_adapter.rs`, `src/claude/tests.rs`; synthetic pinned wire projections in `tests/fixtures/codex-app-server/` |
 | CLI profiles or launch behavior | `tests/profiles_fixtures.rs`, `tests/profiles_launch.rs`, startup replay tests |
+| Application tool attachment/configuration | `src/tools/tests.rs`, `tests/tool_attachments.rs`; affected native adapter tests for MCP admission |
 | Async adapters or cancellation | `tests/tokio_api.rs` and async module tests |
 | README and runnable examples | `tests/readme.rs`, `tests/example_behaviors.rs` and the compiled examples |
 | HTTP/SSE presentation | `cargo test --locked -p agent-link-http --all-features -- --test-threads=1`; offline bounded socket fixtures |

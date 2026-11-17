@@ -36,5 +36,6 @@ jobs:
         with:
           toolchain: '1.85.0'
       - run: cargo check --locked --workspace --lib --no-default-features
+      - run: cargo check --locked --lib --no-default-features --features tools
       - run: cargo check --locked --workspace --lib --all-features
       - run: cargo check --locked -p agent-link-daemon --all-targets --all-features

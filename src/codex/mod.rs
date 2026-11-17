@@ -160,6 +160,10 @@ impl CodexAppServer {
         options: CodexOptions,
     ) -> crate::Result<(Self, CodexEvents)> {
         let limits = options.limits;
+        #[cfg(feature = "tools")]
+        if let Some(tools) = &spec.launch.tools {
+            tools.require_backend(crate::tools::McpBackend::Codex)?;
+        }
         validate_limits(limits)?;
         spec.stdout_utf8 = RpcUtf8Mode::Strict;
         spec.limits.max_stdout_line_bytes = spec

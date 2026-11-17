@@ -149,6 +149,10 @@ fn answer(text: &str) -> Dialog {
 }
 
 impl AgentProfile for CodexProfile {
+    #[cfg(feature = "tools")]
+    fn mcp_backend(&self, _: crate::tools::ToolTransport) -> Option<crate::tools::McpBackend> {
+        Some(crate::tools::McpBackend::Codex)
+    }
     fn compatibility(&self) -> crate::agent::compatibility::Compatibility {
         use crate::agent::compatibility::{Compatibility, Evidence, EvidenceKind, Support};
         Compatibility {

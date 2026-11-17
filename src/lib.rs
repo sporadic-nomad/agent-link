@@ -41,6 +41,7 @@
 //! |---|---|---|
 //! | `screen` | yes | headless terminal model (`vt100`), screen-text normalisation (`regex`) and signal tap (title, progress, sync frames, query replies) |
 //! | `agent` | yes | built-in agent profiles and delivery controller (implies `screen`) |
+//! | `tools` | no | per-run CLI/MCP launch attachments (implies `agent`; optional `serde_json`, `tempfile`, `url`) |
 //! | `rpc` | no | stdio line transport for JSON-over-stdio agents (implies `agent`) |
 //! | `acp` | no | bounded ACP stable-v1 adapter (implies `rpc`; optional `serde_json`) |
 //! | `claude` | no | persistent bounded Claude stream-json adapter (implies `rpc`; optional `serde_json`) |
@@ -214,6 +215,7 @@ extern crate self as agent_link;
 
 #[cfg(feature = "agent")]
 pub mod agent;
+
 #[cfg(feature = "approvals")]
 pub mod approvals;
 #[cfg(feature = "tokio")]
@@ -244,6 +246,8 @@ pub mod rpc;
 #[cfg(feature = "screen")]
 pub mod screen;
 pub mod shell;
+#[cfg(feature = "tools")]
+pub mod tools;
 #[cfg(feature = "transcript")]
 pub mod transcript;
 

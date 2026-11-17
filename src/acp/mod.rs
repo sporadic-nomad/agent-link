@@ -79,6 +79,8 @@ struct Shared {
     state: Mutex<State>,
     events: Arc<Queue<AcpEvent>>,
     wake: Sender<()>,
+    #[cfg(feature = "tools")]
+    mcp_servers: Value,
 }
 
 /// Owned connection. Drop settles tickets and asynchronously tears down the child.
@@ -107,6 +109,18 @@ impl AcpClient {
     ) -> crate::Result<(Self, AcpEvents)> {
         let limits = options.limits;
         validate_limits(limits)?;
+        #[cfg(feature = "tools")]
+        let mcp_servers = {
+            if let Some(tools) = &spec.launch.tools {
+                tools.require_backend(crate::tools::McpBackend::Acp)?;
+            }
+            spec.launch
+                .tools
+                .as_ref()
+                .and_then(crate::tools::ToolAttachment::acp_servers)
+                .cloned()
+                .unwrap_or_else(|| json!([]))
+        };
         spec.stdout_utf8 = RpcUtf8Mode::Strict;
         spec.limits.max_stdout_line_bytes = spec
             .limits
@@ -124,6 +138,8 @@ impl AcpClient {
             state: Mutex::new(State::default()),
             events: Queue::new(limits.events, limits.event_bytes),
             wake,
+            #[cfg(feature = "tools")]
+            mcp_servers,
         });
         let worker = Arc::clone(&shared);
         std::thread::Builder::new()
@@ -167,13 +183,15 @@ impl AcpClient {
         self.request(Action::Initialize, "initialize", json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":name,"version":version}}), deadline)
     }
     /// Creates one native session. `cwd` is an absolute provider working directory;
-    /// MCP delegation is intentionally absent. Native errors never trigger fallback.
+    /// MCP connections prepared by the optional tools facade are supplied for this
+    /// session; HTTP requires the agent's advertised capability. Native errors never
+    /// trigger fallback. Without attachments the MCP list remains empty.
     pub fn session_new(&self, cwd: &str, deadline: Instant) -> Result<RequestTicket, AcpError> {
         self.check_text(cwd)?;
         self.request(
             Action::New,
             "session/new",
-            json!({"cwd":cwd,"mcpServers":[]}),
+            json!({"cwd":cwd,"mcpServers":self.mcp_servers()}),
             deadline,
         )
     }
@@ -219,7 +237,7 @@ impl AcpClient {
                 },
             },
             method,
-            json!({"sessionId":id,"cwd":cwd,"mcpServers":[]}),
+            json!({"sessionId":id,"cwd":cwd,"mcpServers":self.mcp_servers()}),
             deadline,
         )
     }
@@ -250,6 +268,17 @@ impl AcpClient {
         }
         Ok(())
     }
+    fn mcp_servers(&self) -> Value {
+        #[cfg(feature = "tools")]
+        {
+            self.shared.mcp_servers.clone()
+        }
+        #[cfg(not(feature = "tools"))]
+        {
+            json!([])
+        }
+    }
+
     fn request(
         &self,
         action: Action,
@@ -287,6 +316,20 @@ impl AcpClient {
                     if !supported {
                         return Err(AcpError::InvalidState);
                     }
+                }
+                if params["mcpServers"]
+                    .as_array()
+                    .is_some_and(|servers| servers.iter().any(|s| s["type"] == "http"))
+                    && state
+                        .snapshot
+                        .initialized
+                        .as_ref()
+                        .is_none_or(|v| v["agentCapabilities"]["mcpCapabilities"]["http"] != true)
+                {
+                    return Err(Error::Unsupported(
+                        "ACP agent did not advertise HTTP MCP support".into(),
+                    )
+                    .into());
                 }
             }
             Action::Prompt => {

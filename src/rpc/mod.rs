@@ -391,6 +391,9 @@ pub struct RpcChild {
     /// Dropped (detached) in teardown, never joined: each may be blocked on a pipe.
     threads: Mutex<Vec<JoinHandle<()>>>,
     torn_down: AtomicBool,
+    // Files outlive process teardown; cleanup never runs under the child/writer mutex.
+    #[cfg(feature = "tools")]
+    _tools: Option<crate::tools::ToolAttachment>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -474,6 +477,8 @@ impl RpcChild {
                 child: Mutex::new(child),
                 threads: Mutex::new(threads),
                 torn_down: AtomicBool::new(false),
+                #[cfg(feature = "tools")]
+                _tools: spec.launch.tools.clone(),
             },
             events,
         ))

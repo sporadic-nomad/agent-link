@@ -8,8 +8,8 @@ changed behavior, plus the shared static checks:
 python3 scripts/check.py --skip-tests
 ```
 
-The static checks run formatting, feature checks (including isolated `claude` and
-`claude,tokio`), Clippy and rustdoc. Tests use real
+The static checks run formatting, feature checks (including isolated `claude`,
+`claude,tokio`, and `tools` with each native adapter), Clippy and rustdoc. Tests use real
 local shells and a scripted agent; no account credentials or live API calls are needed.
 The `test-support` feature enables that helper executable and the integration tests
 that use it. Applications should leave it disabled.
@@ -55,6 +55,21 @@ See [release preparation](#release-preparation) for package validation.
 
 The `observers` feature is checked independently without defaults by the shared static
 gate; its bounded fanout unit tests and serial native PTY fence test require no credentials.
+
+The `tools` feature adds optional `tempfile` (3.10+ for permission-aware directory
+creation), `serde_json` and `url` (HTTP endpoint syntax validation) dependencies.
+Keep the URL parser's transitive dependencies compatible with Rust 1.85 when updating
+the lockfile. Its launch tests are offline:
+
+```sh
+cargo test --locked --all-features --lib tools::tests -- --test-threads=1
+cargo test --locked --all-features --test tool_attachments -- --test-threads=1
+```
+
+Run the affected adapter tests when modifying MCP admission. CI's Rust 1.85 checks
+include `--no-default-features --features tools`, workspace minimal/all-feature libraries,
+and the daemon's all-feature targets. Temporary configuration is not live compatibility
+evidence; see [application tools](docs/application-tools.md).
 
 ACP offline subset validation: [adapter evidence](docs/rpc-and-native-adapters.md#agent-client-protocol-acp).
 

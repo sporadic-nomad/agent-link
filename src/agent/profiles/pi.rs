@@ -125,6 +125,10 @@ fn is_rule(row: &str) -> bool {
 }
 
 impl AgentProfile for PiProfile {
+    #[cfg(feature = "tools")]
+    fn mcp_backend(&self, _: crate::tools::ToolTransport) -> Option<crate::tools::McpBackend> {
+        Some(crate::tools::McpBackend::Pi)
+    }
     fn compatibility(&self) -> crate::agent::compatibility::Compatibility {
         use crate::agent::compatibility::{Compatibility, Evidence, EvidenceKind, Support};
         Compatibility {

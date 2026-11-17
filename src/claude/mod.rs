@@ -422,6 +422,10 @@ impl ClaudeSession {
         resume: Option<String>,
     ) -> crate::Result<(Self, Events)> {
         let limits = options.limits;
+        #[cfg(feature = "tools")]
+        if let Some(tools) = &spec.launch.tools {
+            tools.require_backend(crate::tools::McpBackend::Claude)?;
+        }
         if limits.frame_bytes == 0
             || limits.pending == 0
             || limits.events == 0
@@ -516,7 +520,9 @@ impl ClaudeSession {
     pub fn failure(&self) -> Option<Failure> {
         self.snapshot().failure
     }
-    /// Initialize the pinned minimal subset (no hooks, MCP or SDK imitation).
+    /// Initialize the pinned minimal control subset (no hooks or SDK MCP bridge).
+    /// External MCP servers may be registered through launch configuration, including
+    /// the optional tools facade; the CLI owns those connections.
     pub fn initialize(&self, deadline: Instant) -> crate::Result<Ticket> {
         self.shared.enqueue(
             Action::Initialize,

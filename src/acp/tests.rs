@@ -20,6 +20,8 @@ fn harness(limits: AcpLimits) -> (AcpClient, AcpEvents) {
         state: Mutex::new(State::default()),
         events: Queue::new(limits.events, limits.event_bytes),
         wake,
+        #[cfg(feature = "tools")]
+        mcp_servers: json!([]),
     });
     (
         AcpClient {
@@ -72,6 +74,93 @@ fn ready(limits: AcpLimits) -> (AcpClient, AcpEvents) {
     let new = app.session_new(cwd(), deadline()).unwrap();
     response(&app, &new, json!({"sessionId":"s"}));
     (app, events)
+}
+
+#[cfg(feature = "tools")]
+#[test]
+fn attached_mcp_connections_reach_new_load_and_resume() {
+    use crate::tools::{AgentTools, McpBackend, McpServer};
+    let launch = AgentTools::new()
+        .with_mcp(
+            McpServer::stdio("app", std::env::current_exe().unwrap())
+                .arg("serve")
+                .env("TOKEN", "synthetic"),
+        )
+        .with_mcp(
+            McpServer::http("app_http", "http://localhost:9123/mcp")
+                .header("Authorization", "synthetic"),
+        )
+        .configure_rpc(
+            McpBackend::Acp,
+            crate::agent::RpcLaunch::new("synthetic", &[]),
+        )
+        .unwrap();
+    let servers = launch.tools.unwrap().acp_servers().unwrap().clone();
+    for method in ["session/new", "session/load", "session/resume"] {
+        let (mut app, _) = harness(AcpLimits::default());
+        Arc::get_mut(&mut app.shared).unwrap().mcp_servers = servers.clone();
+        let init = app.initialize("test", "1", deadline()).unwrap();
+        response(
+            &app,
+            &init,
+            json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"resume":{}},"mcpCapabilities":{"http":true}}}),
+        );
+        let ticket = match method {
+            "session/new" => app.session_new(cwd(), deadline()),
+            "session/load" => app.session_load("s", cwd(), deadline()),
+            _ => app.session_resume("s", cwd(), deadline()),
+        }
+        .unwrap();
+        {
+            let state = lock(&app.shared.state);
+            let pending = state
+                .pending
+                .iter()
+                .find(|p| p.id.as_deref() == Some(ticket.id()))
+                .unwrap();
+            let request: Value = serde_json::from_str(pending.line.as_ref().unwrap()).unwrap();
+            assert_eq!(request["method"], method);
+            assert_eq!(request["params"]["mcpServers"], servers);
+        }
+        response(
+            &app,
+            &ticket,
+            if method == "session/new" {
+                json!({"sessionId":"s"})
+            } else {
+                json!({})
+            },
+        );
+        assert!(matches!(
+            &*ticket.outcome().unwrap(),
+            RequestOutcome::Response(_)
+        ));
+    }
+}
+
+#[cfg(feature = "tools")]
+#[test]
+fn unadvertised_http_mcp_is_refused_without_consuming_admission() {
+    for method in ["new", "load", "resume"] {
+        let (mut app, _) = initialized(AcpLimits::default());
+        Arc::get_mut(&mut app.shared).unwrap().mcp_servers =
+            json!([{"name":"app","type":"http","url":"http://localhost:9123/mcp","headers":[]}]);
+        let before = lock(&app.shared.state).next;
+        let result = match method {
+            "new" => app.session_new(cwd(), deadline()),
+            "load" => app.session_load("s", cwd(), deadline()),
+            _ => app.session_resume("s", cwd(), deadline()),
+        };
+        assert!(matches!(
+            result,
+            Err(AcpError::Transport(Error::Unsupported(_)))
+        ));
+        let state = lock(&app.shared.state);
+        assert_eq!(state.next, before);
+        assert!(state.pending.is_empty());
+        assert!(!state.mutation);
+        assert!(state.snapshot.session_id.is_none());
+    }
 }
 fn permission(app: &AcpClient, events: &AcpEvents, id: Value) -> Permission {
     input(

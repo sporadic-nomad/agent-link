@@ -220,6 +220,9 @@ pub struct LaunchPlan {
     /// Variables set only when the host's [`EnvPolicy`] does not set the key, so a user's
     /// own value wins.
     pub env_defaults: Vec<(String, String)>,
+    /// Prepared tool configuration. Clones share ownership of temporary files.
+    #[cfg(feature = "tools")]
+    pub tools: Option<crate::tools::ToolAttachment>,
     /// The shell the plan was built for, when its content depends on it
     /// ([`for_shell`](Self::for_shell)).
     shell: Option<ShellKind>,
@@ -233,6 +236,8 @@ impl LaunchPlan {
             args: Vec::new(),
             env: Vec::new(),
             env_defaults: Vec::new(),
+            #[cfg(feature = "tools")]
+            tools: None,
             shell: None,
         }
     }
@@ -302,6 +307,10 @@ impl LaunchPlan {
     /// [`env`](Self::env) entry (overriding). A key the policy removes stays removed.
     pub fn merge_env_into(&self, policy: &mut EnvPolicy) {
         merge_launch_env(policy, &self.env_defaults, &self.env);
+        #[cfg(feature = "tools")]
+        if let Some(tools) = &self.tools {
+            tools.apply_path(policy);
+        }
     }
 }
 

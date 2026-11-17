@@ -6,7 +6,7 @@ no UI or host-framework dependency: your application owns rendering and UX while
 manages child lifecycles, bounded event streams, startup steering, verified message delivery
 and protocol framing.
 
-> **Version:** `0.1.1` · **Edition:** Rust 2024 · **MSRV:** 1.85 · **License:** MIT
+> **Version:** `0.2.0` · **Edition:** Rust 2024 · **MSRV:** 1.85 · **License:** MIT
 
 Only **macOS** has verified native runtime results. Linux and Windows runtime support
 remains unverified; see [platform evidence](../README.md#platforms). The built-in Cursor
@@ -23,6 +23,7 @@ Pick the smallest layer that fits how you talk to the agent:
 | Raw shell or CLI on a PTY | `pty::Terminal` | always on | [PTY & Screen](pty-and-screen.md) |
 | Headless terminal model & signals | `screen::Vt100Model`, `ScreenSnapshot` | `screen` (default) | [PTY & Screen](pty-and-screen.md#headless-screen-model-screen-feature) |
 | Interactive agent CLI with startup & verified paste | `agent::AgentTerminal`, `ProfileRegistry` | `agent` (default) | [Agents & Delivery](agents-and-delivery.md) |
+| Attach application CLI/MCP tools to an agent run | `tools::AgentTools` | `tools` | [Application Tools](application-tools.md) |
 | Check whether CLIs are installed & signed in | `probe::probe_agents`, `probe_agents_detailed` | `probe` | [Permissions & Probes](permissions-and-probes.md) |
 | Raw JSON-lines over stdio | `rpc::RpcChild` | `rpc` | [RPC & Native Adapters](rpc-and-native-adapters.md#generic-json-lines-rpc-rpc) |
 | Bounded Codex app-server protocol | `codex::CodexAppServer` | `codex` | [RPC & Native Adapters](rpc-and-native-adapters.md#codex-app-server-codex) |
@@ -39,26 +40,30 @@ Pick the smallest layer that fits how you talk to the agent:
 
 ## Feature Flags
 
-Until the first registry release, use a local checkout. Choose one dependency entry:
+Add the crate from crates.io. Choose one dependency entry:
 
 ```toml
 [dependencies]
 # Default: PTY + headless screen (`vt100`, `regex`) + interactive agent profiles
-agent-link = { path = "../agent-link" }
+agent-link = "0.2"
 
 # Minimal core: PTY sessions, env, shell, identity, resolve, proc only
-# agent-link = { path = "../agent-link", default-features = false }
+# agent-link = { version = "0.2", default-features = false }
 
 # Common combinations
-# agent-link = { path = "../agent-link", features = ["rpc", "probe", "tokio"] }
-# agent-link = { path = "../agent-link", features = ["codex", "acp", "claude", "approvals"] }
+# agent-link = { version = "0.2", features = ["rpc", "probe", "tokio"] }
+# agent-link = { version = "0.2", features = ["codex", "acp", "claude", "approvals"] }
+# agent-link = { version = "0.2", features = ["tools", "codex"] }
 ```
+
+For development, use `{ path = "../agent-link" }` instead of the version.
 
 | Feature | Default | Implies | Extra dependencies | Purpose |
 | --- | --- | --- | --- | --- |
 | *(none)* | — | — | `portable-pty`, `crossbeam-channel`, `log`, `thiserror`, `libc` (Unix) / `windows-sys` (Windows) | Core PTY, environment, shell, identity, path resolution, process helpers |
 | `screen` | **yes** | — | `vt100`, `regex` | Headless terminal parser, normalized text, OSC/DEC signal tap |
 | `agent` | **yes** | `screen` | — | `AgentTerminal`, built-in CLI profiles, startup gate, verified delivery |
+| `tools` | no | `agent` | `serde_json`, `tempfile`, `url` | Per-run CLI/MCP attachment facade |
 | `rpc` | no | `agent` | — | `RpcChild` JSON-lines stdio transport, tracked writes, strict UTF-8 |
 | `probe` | no | `agent` | — | CLI installation and three-way sign-in probes |
 | `codex` | no | `rpc` | `serde_json` | Bounded Codex `app-server` v2 adapter |
