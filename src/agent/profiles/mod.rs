@@ -24,6 +24,8 @@
 //! in progress: 2026.11.13 has a `--force` login recording only, and authenticated
 //! startup/composer validation is pending.
 //! These checks do not extend the screen versions above or certify native Windows.
+//! All built-ins currently return `false` for [`AgentProfile::question_dialog`].
+//! Custom profiles can implement it for question layouts they have recorded.
 //!
 //! Profiles read screen text, so a CLI release that rewords a dialog or its composer can
 //! break detection; the controller then logs a `startup markers not recognised` report.

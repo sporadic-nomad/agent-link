@@ -10,8 +10,9 @@
 //! default sends Enter once. A stale composer may outlive an accepted submit, so opt-in
 //! retries can submit twice and do not provide exactly-once delivery. Uncertainty ends
 //! `SubmitUnverified` without another Enter. A profile panic therefore cannot silently
-//! confer receipt. Never into a dialog: one before any Enter goes back to the startup
-//! gate and the delivery fails.
+//! confer receipt. A recognized question stops the next Enter. The caller checks
+//! ownership again before reporting `DialogBlocking` because the shell may now hold
+//! the paste. A startup dialog goes back to the gate.
 //!
 //! Never into the shell either: the foreground is read right before every Enter (the
 //! same rule as before the paste). The agent can leave in the quarter second or more
@@ -26,7 +27,7 @@
 
 use std::time::Instant;
 
-use super::controller::{MessageJob, Owner, Runner, Step, not_the_agent, trace};
+use super::controller::{MessageJob, Owner, Runner, Step, check_question, not_the_agent, trace};
 use super::settle::{Settle, Submit, SubmitCheck, VerifyTiming};
 use super::{AbortReason, TicketId};
 
@@ -112,10 +113,11 @@ impl Runner {
         loop {
             self.cancelled()?;
             self.agent_before_enter(job.ticket, job.opts.strict.then_some("paste verification"))?;
-            let read = self.profile_read(false, |profile, screen| {
-                profile.pending_input(screen, &job.text)
+            let read = self.profile_read(|profile, screen, leftover| {
+                check_question(profile, leftover.fresh(screen))?;
+                Ok(profile.pending_input(screen, &job.text) == Some(true))
             })?;
-            if read.view.output_serial > paste_fence && read.value.flatten() == Some(true) {
+            if read.value.transpose()? == Some(true) && read.view.output_serial > paste_fence {
                 return Ok(());
             }
             let now = Instant::now();
@@ -126,8 +128,7 @@ impl Runner {
         }
     }
 
-    /// A dialog on screen ⇒ handed to the startup gate and `TrustPromptBlocking`: an Enter
-    /// is never typed into it.
+    /// Stop before Enter on a recognized question. Only a startup dialog rechecks the gate.
     fn no_dialog_before_enter(&mut self, ticket: TicketId) -> Step<()> {
         let Some(dialog) = self.dialog_on_screen()? else {
             return Ok(());
@@ -145,7 +146,7 @@ impl Runner {
     /// ([`interrupt_the_shell`](Self::interrupt_the_shell)); another program ⇒ no Enter,
     /// `ForegroundUnproven`. `strict` (the proof point's name): the strict proof on the
     /// same read too.
-    fn agent_before_enter(&self, ticket: TicketId, strict: Option<&str>) -> Step<()> {
+    pub(super) fn agent_before_enter(&self, ticket: TicketId, strict: Option<&str>) -> Step<()> {
         let (owner, front, agent) = self.owner(ticket)?;
         match owner {
             Owner::Agent => match strict {
@@ -225,7 +226,7 @@ impl Runner {
         loop {
             self.cancelled()?;
             let read =
-                self.profile_read(false, |profile, screen| profile.pending_input(screen, text))?;
+                self.profile_read(|profile, screen, _| profile.pending_input(screen, text))?;
             match check.poll(
                 &read.view,
                 read.value.flatten(),

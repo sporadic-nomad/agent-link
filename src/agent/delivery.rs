@@ -30,7 +30,7 @@ pub enum DeliveryOutcome {
     /// until the user acts or the next launch line the crate types clears it; it never runs
     /// by the crate's doing.
     PastedUnsubmitted,
-    /// Not delivered.
+    /// Delivery stopped. The reason describes which writes may already have occurred.
     Aborted(AbortReason),
 }
 
@@ -63,13 +63,20 @@ pub enum AbortReason {
     /// agent's own program (an unknown owner, a heuristic one under `ExactOnly`, a program
     /// it cannot name).
     ForegroundUnproven,
-    /// A dialog was on screen where the message would have gone (after readiness, or in
+    /// A startup dialog was on screen where the message would have gone (after readiness, or in
     /// place of the composer while verifying the submit); nothing was typed into it.
     TrustPromptBlocking,
+    /// The profile recognized an active question. At the commit point this stops the
+    /// paste, including a paste-only send. Before an Enter the paste is already queued,
+    /// and a previous Enter may have been sent if retries were enabled. After a paste,
+    /// this outcome requires a fresh foreground read naming the agent. Inspect the
+    /// session before sending again.
+    DialogBlocking,
     /// The commit-point check ([`SendOptions::revalidate`]) said no, or its handshake was
     /// not answered in time.
     Revalidate,
-    /// Screen evidence could not confirm submission: the paste was not observed, the
+    /// The profile could not supply a current dialog check before input, or screen
+    /// evidence could not confirm submission: the paste was not observed, the
     /// composer remained unchanged, or the profile could not read it reliably. No Enter
     /// is written before observing the paste; afterward the default writes it once.
     /// Explicitly configured retries can write more. The agent may already have accepted
@@ -106,6 +113,7 @@ impl AbortReason {
             Self::ShellOnly => "shell_only",
             Self::ForegroundUnproven => "foreground_unproven",
             Self::TrustPromptBlocking => "trust_prompt_blocking",
+            Self::DialogBlocking => "dialog_blocking",
             Self::Revalidate => "revalidate",
             Self::SubmitUnverified => "submit_unverified",
             Self::Disposed => "disposed",
@@ -395,6 +403,7 @@ mod tests {
 
     #[test]
     fn reasons_have_snake_case_names() {
+        assert_eq!(AbortReason::DialogBlocking.as_str(), "dialog_blocking");
         assert_eq!(
             AbortReason::TrustPromptBlocking.as_str(),
             "trust_prompt_blocking"

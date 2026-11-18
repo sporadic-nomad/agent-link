@@ -47,9 +47,10 @@
 //! 3. **Input lull** (`settle::lull_ready`): never paste into a burst of output.
 //! 4. **Commit point**: the last check before the irreversible paste — the host's
 //!    revalidation (`proof`: a sync check, or the `Event::CommitPoint` handshake), the
-//!    strict proof (*pre-paste readiness*), then a dialog on screen: handed back to the
-//!    startup gate (inside its post-ready watch it un-readies and is steered, and the job
-//!    waits again); otherwise the job fails rather than type into it. A gate that is no
+//!    strict proof (*pre-paste readiness*), then a screen check. A recognized question
+//!    ends the job with `DialogBlocking`. A startup dialog goes back to the startup
+//!    gate, which may steer it inside its post-ready watch and make the job wait again.
+//!    If the gate stays ready the job ends with `TrustPromptBlocking`. A gate that is no
 //!    longer ready (its watch un-readied it during the lull, a launch re-armed it) ⇒ wait
 //!    for it again. Then the foreground once more (the agent may have left during the
 //!    lull), handled as in step 2 — for a strict send the *paste* proof: the shell there
@@ -87,6 +88,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::delivery::Resolver;
+use super::leftover::Leftover;
 use super::settle::{self, Fence, LullParams, OutputView, Settle, interrupt_due};
 use super::state::{AgentProgram, Controller, FrontRead, Interrupt};
 use super::{
@@ -228,6 +230,15 @@ impl Job {
 
 /// A step's result: go on, or end the job with this reason.
 pub(crate) type Step<T> = std::result::Result<T, AbortReason>;
+
+/// A question owns input until the user answers or dismisses it.
+pub(super) fn check_question(profile: &dyn AgentProfile, fresh: &str) -> Step<()> {
+    if profile.question_dialog(fresh) {
+        Err(AbortReason::DialogBlocking)
+    } else {
+        Ok(())
+    }
+}
 
 /// Who a job takes for the terminal's owner ([`job_owner`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -542,7 +553,16 @@ impl Runner {
             // 6. Submit.
             if job.opts.submit {
                 self.wait_paste_landed(after_serial)?;
-                self.submit_with_verification(job, after_serial)?;
+                let submitted = self.submit_with_verification(job, after_serial);
+                if submitted == Err(AbortReason::DialogBlocking) {
+                    // The agent can leave its question on screen and its unread paste
+                    // on the shell's line. Check the owner after any post-paste match.
+                    self.agent_before_enter(
+                        ticket,
+                        job.opts.strict.then_some("question after paste"),
+                    )?;
+                }
+                submitted?;
             } else if job.text.contains('\n') {
                 // An agent that left without reading the paste leaves it to the shell — a
                 // multi-line buffer one line kill does not empty (zsh). It leaves only once
@@ -872,7 +892,9 @@ impl Runner {
     /// look.
     pub(crate) fn wait_lull(&mut self, params: LullParams) -> Step<settle::Lull> {
         loop {
-            let read = self.profile_read(true, |profile, screen| profile.classify(screen))?;
+            let read = self.profile_read(|profile, screen, leftover| {
+                profile.classify(leftover.fresh(screen))
+            })?;
             let view = if read.unseen {
                 read.view
                     .with_unseen_output(self.ctl.term().output_chunks(), Instant::now())
@@ -911,38 +933,30 @@ impl Runner {
         }
     }
 
-    /// Evaluate a screen callback outside all locks. Snapshot text and its rendered
-    /// serial/revision are captured together; only a matching lifecycle and fully
-    /// counted, unchanged screen can supply a result after the callback returns.
+    /// Evaluate a callback outside all locks. It can read the full screen and its
+    /// launch-fresh suffix from the same snapshot. Only a matching lifecycle and fully
+    /// counted, unchanged render can supply a result after the callback returns.
     pub(crate) fn profile_read<T: Copy>(
         &mut self,
-        fresh: bool,
-        call: impl FnOnce(&dyn AgentProfile, &str) -> T,
+        call: impl FnOnce(&dyn AgentProfile, &str, &Leftover) -> T,
     ) -> Step<ProfileRead<T>> {
         self.cancelled()?;
         let lifecycle = self.ctl.read(|st| st.lifecycle_revision());
         let observation = self.ctl.term().screen_observation();
         let value = if let Some((screen, rendered, revision)) = &observation {
-            let text = screen.text();
-            let text = self.ctl.read(|st| {
+            let leftover = self.ctl.read(|st| {
                 (st.lifecycle_revision() == lifecycle
                     && st.view.output_serial == *rendered
                     && self
                         .ctl
                         .term()
                         .screen_observation_current(*rendered, *revision))
-                .then(|| {
-                    if fresh {
-                        st.fresh_screen(&text).to_owned()
-                    } else {
-                        text
-                    }
-                })
+                .then(|| st.leftover().clone())
             });
-            match text {
-                Some(text) => self.profile_call(|profile| call(profile, &text)),
-                None => None,
-            }
+            leftover.and_then(|leftover| {
+                let text = screen.text();
+                self.profile_call(|profile| call(profile, &text, &leftover))
+            })
         } else {
             None
         };
@@ -967,8 +981,8 @@ impl Runner {
         })
     }
 
-    /// A stale absence of a dialog must not authorize input. Reobserve within a
-    /// bounded window; an unreadable screen or failed callback leaves delivery unverified.
+    /// Stop on a question or return the startup dialog from this observation. Reobserve
+    /// stale or unavailable results within the verification window.
     pub(crate) fn dialog_on_screen(&mut self) -> Step<Option<Dialog>> {
         if self.ctl.cfg.profile.is_none() {
             self.cancelled()?;
@@ -982,9 +996,13 @@ impl Runner {
             .submit_verify_poll
             .max(Duration::from_millis(1));
         loop {
-            let read = self.profile_read(true, |profile, screen| profile.dialog(screen))?;
-            if let Some(dialog) = read.value {
-                return Ok(dialog);
+            let read = self.profile_read(|profile, screen, leftover| {
+                let fresh = leftover.fresh(screen);
+                check_question(profile, fresh)?;
+                Ok(profile.dialog(fresh))
+            })?;
+            if let Some(result) = read.value {
+                return result;
             }
             let now = Instant::now();
             if now >= deadline {
@@ -1012,12 +1030,12 @@ impl Runner {
         let profile = self.ctl.cfg.profile.as_deref()?;
         match catch_panic(|| call(profile)) {
             Ok(value) => Some(value),
-            Err(message) => {
+            Err(_) => {
                 self.profile_failed = true;
                 let id = self.ctl.cfg.id;
                 let profile = &self.ctl.cfg.profile_id;
                 log::warn!(
-                    "[agent-link:{id}] profile {profile} panicked in a delivery: {message}; deliveries no longer read its screens"
+                    "[agent-link:{id}] profile {profile} panicked during delivery. Further delivery screen checks are unavailable"
                 );
                 None
             }

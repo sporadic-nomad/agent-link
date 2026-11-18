@@ -86,6 +86,26 @@ verdicts if output or the screen revision changes during evaluation, then observ
 again. Time spent in a delayed callback cannot make obsolete composer evidence
 stable enough to verify submission.
 
+### Questions that take keyboard input
+
+The delivery thread calls `AgentProfile::question_dialog` on the visible rows drawn
+since launch. A match at the commit point stops the paste, including a paste-only send.
+For a submit, it also checks while waiting for the pasted text to appear and before
+each Enter. A match there stops the next Enter. The paste and an earlier Enter attempt
+may already have reached the agent. After an Enter, delivery evaluates the usual
+composer evidence to determine whether the submission succeeded.
+
+After a post-paste match, delivery rechecks which program owns the terminal. If the
+shell has taken it back, delivery sends Ctrl-C to clear the inherited draft and reports
+`ShellOnly`. A different or unknown owner gives `ForegroundUnproven`. For an agent
+question, the ticket and delivery event report `Aborted(DialogBlocking)` and the
+question stays available for the user to answer. The startup gate and `blocking()`
+stay as they were in this case. Inspect the session before sending again. Recognition
+depends on the dialog layouts measured for the profile, and the screen can change
+between a check and its write.
+If a redraw invalidates the observation, delivery checks again. An unavailable check
+at the end of the verification window gives `SubmitUnverified`.
+
 ### `Ticket` and `DeliveryOutcome`
 
 `send()`, `reset()`, and `reset_and_send()` return a `Ticket` immediately:
@@ -100,7 +120,7 @@ Possible `DeliveryOutcome` values:
 | --- | --- |
 | `Delivered` | Pasted, and (with `submit: true`) a composer transition was verified on screen. Terminal evidence, not a provider protocol ACK. |
 | `PastedUnsubmitted` | Shell remained in front after one relaunch; single-line text placed inertly on the shell input line without Enter. |
-| `Aborted(reason)` | Not delivered (see `AbortReason` below). |
+| `Aborted(reason)` | Delivery stopped. The reason describes which input may already have reached the terminal. |
 
 ### `AbortReason` Reference
 
@@ -110,8 +130,9 @@ Possible `DeliveryOutcome` values:
 | `ShellOnly` (`"shell_only"`) | Shell stayed in front under `ShellFallback::Fail` / `strict`, multi-line/unclearable text, or shell returned to foreground after paste (controller sends Ctrl-C to clear shell line). |
 | `ForegroundUnproven` (`"foreground_unproven"`) | Another program owns the terminal, or foreground confidence is rejected by `ForegroundPolicy` (e.g. Windows heuristic under `ExactOnly`). |
 | `TrustPromptBlocking` (`"trust_prompt_blocking"`) | A startup/trust dialog was on screen where the message or verification would go. |
+| `DialogBlocking` (`"dialog_blocking"`) | The profile recognized an active question before the paste or a subsequent Enter. Inspect the session before sending again. |
 | `Revalidate` (`"revalidate"`) | `Revalidate::Sync` returned `false`/panicked, or `Revalidate::Handshake` received `false`/timed out. |
-| `SubmitUnverified` (`"submit_unverified"`) | Paste was not seen, composer appeared unchanged after Enter, or profile cannot read composer (`pending_input` returned `None`). **Do NOT auto-resend.** |
+| `SubmitUnverified` (`"submit_unverified"`) | A current dialog check was unavailable, the paste was not seen, or the composer was unchanged or unreadable after Enter. **Do NOT auto-resend.** |
 | `Disposed` (`"disposed"`) | `AgentTerminal` was dropped before completion. |
 | `WriteFailed` (`"write_failed"`) | Underlying PTY write failed. |
 | `Unsupported` (`"unsupported"`) | `reset()` / `reset_and_send()` called without a profile or on a profile with `reset_command() == None`. |
@@ -125,14 +146,16 @@ Possible `DeliveryOutcome` values:
 
 ## Conversation Resets (`reset` & `reset_and_send`)
 
-- `term.reset() -> Ticket`: sends the profile's `reset_command()` (`"/clear"` for `claude` and `codex`; `"/new"` for `pi`, `opencode`, `cursor`) with `submit: true` and `on_shell: ShellFallback::Fail`.
-- `term.reset_and_send(text, opts) -> Ticket`: executes a reset followed by `text` as **one** atomic delivery ticket:
+- `term.reset() -> Ticket` sends the profile's `reset_command()` (`"/clear"` for `claude` and `codex`, `"/new"` for `pi`, `opencode` and `cursor`) with `submit: true` and the default `ShellFallback::PasteInert`.
+- `term.reset_and_send(text, opts) -> Ticket` executes a reset followed by `text` as one serialized job with one ticket.
   1. Reserves `text.len() + cmd.len()` bytes (using 1 job slot).
   2. Sends `reset_command` (`strict: false`, `on_shell: Fail`, `revalidate: None`). If reset fails, `text` is not sent.
   3. Waits for fresh output after reset's Enter and settles until ready or `startup_quiet` (capped at `startup_max`).
   4. Sends `text` with `submit: true`, `on_shell: Fail`, and your `opts.strict` / `opts.revalidate`.
 
-Reset commands are never retried automatically.
+Both halves check for questions. If the reset ends with `DialogBlocking`, the composite
+ticket carries that reason and the follow-up message is skipped. Reset commands are
+never retried automatically.
 
 ---
 
@@ -206,9 +229,10 @@ Implement `agent::AgentProfile` (`Send + Sync`) to support another CLI or custom
 
 - **Required methods:**
   - `id(&self) -> &str`
-  - `dialog(&self, text: &str) -> Option<Dialog>` — return `Some(Dialog { kind, key })` when a dialog is visible (`key: None` pauses for the user). Accepts either normalized screen text or raw rolling output; normalize with `screen::normalize(text)`.
+  - `dialog(&self, text: &str) -> Option<Dialog>` — report startup prompts here. The startup gate can steer them using `key`. A `None` key leaves the prompt to the user. The method accepts screen text or raw rolling output, which you can normalize with `screen::normalize(text)`.
   - `input_ready(&self, screen: &str) -> bool` — recognize the ready composer; return `false` for dialogs or unreadable screens.
 - **Important defaulted methods:**
+  - `question_dialog(&self, screen: &str) -> bool` — recognize a question currently taking keyboard input. The default returns `false`, which all built-in profiles currently inherit. Use `detect::dialog_at_bottom` with markers from a recorded version of the CLI. It skips blank rows and recognized rules or box edges below the footer. A redrawn empty composer such as `❯` closes the block.
   - `launchers(&self) -> &'static [&'static str]`
   - `launch(&self, perms, trust, cwd, shell) -> LaunchPlan`
   - `pending_input(&self, screen, sent) -> Option<bool>` — defaults to `detect::pending_input_default(screen, sent)` (`Some(true)` = still in composer, `Some(false)` = submitted/cleared, `None` = unreadable).

@@ -33,7 +33,9 @@ use common::delivery::{
     install_status_prompt, long_window, outcome, outcome_where, outcome_with_output,
     outcome_with_states, shell, short_window, submit, wait_for_interrupted_prompt,
 };
-use common::fake::{READY_MARKER, fake_profile, unlaunchable_profile};
+use common::fake::{
+    READY_MARKER, answer_question, fake_profile, open_question, unlaunchable_profile,
+};
 use common::{
     LAUNCH_WAIT, WAIT, bottom_rows, logger, screen_contains, sh_spec, wait_screen, wait_until,
 };
@@ -594,6 +596,224 @@ fn a_dialog_after_readiness_blocks_the_send() {
     let screen = screen_contains(term.terminal(), "❯ 1. No, exit", WAIT);
     assert!(!screen.text().contains("hello"), "{}", bottom_rows(&screen));
     assert!(!screen.text().contains("you:"), "{}", bottom_rows(&screen));
+}
+
+#[test]
+fn an_open_question_blocks_paste_and_submit_without_changing_readiness() {
+    let (term, events, home) = fake("question-dialog", &["--input-log", "input.bin"]);
+    term.launch().unwrap();
+    states_until(&term, &events, LAUNCH_WAIT, |s, _| s == AgentState::Ready);
+    let ready = (term.state(), term.blocking());
+    assert_eq!(ready, (AgentState::Ready, false));
+    open_question(term.terminal());
+
+    let mut states = Vec::new();
+    for opts in [SendOptions::default(), submit()] {
+        let ticket = term.send("leave the question to the user", opts);
+        assert_eq!(
+            outcome_with_states(&term, &events, &ticket, &mut states),
+            Aborted(AbortReason::DialogBlocking)
+        );
+        assert_eq!((term.state(), term.blocking()), ready);
+    }
+    assert!(states.iter().all(|s| *s == ready), "{states:?}");
+
+    answer_question(term.terminal());
+    assert_eq!(
+        std::fs::read(home.path().join("input.bin")).unwrap(),
+        b"\x1b[A1"
+    );
+    let next = term.send("after the answer", submit());
+    assert_eq!(outcome(&term, &events, &next), Delivered);
+    screen_contains(term.terminal(), "you: after the answer", WAIT);
+}
+
+mod question_redraws {
+    use super::*;
+    use agent_link::agent::{
+        AgentProfile, Dialog, LaunchPlan, Permissions, ShellKind, TrustPolicy,
+    };
+    use agent_link::{PtySize, SpawnSpec};
+    use common::fake::{FakeProfile, QUESTION_FOOTER};
+    use crossbeam_channel::{Sender, bounded};
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Check {
+        PasteVisibility,
+        Retry,
+        ShellAfterPaste,
+    }
+
+    struct PausedFake {
+        fake: FakeProfile,
+        check: Check,
+        reached: Sender<()>,
+        resume: Receiver<()>,
+    }
+
+    impl PausedFake {
+        fn wait_for_redraw(&self) {
+            let _ = self.reached.try_send(());
+            // Dropping the test's sender releases the callback, including on unwind.
+            let _ = self.resume.recv_timeout(WAIT);
+        }
+    }
+
+    impl AgentProfile for PausedFake {
+        fn id(&self) -> &str {
+            self.fake.id()
+        }
+
+        fn dialog(&self, screen: &str) -> Option<Dialog> {
+            self.fake.dialog(screen)
+        }
+
+        fn input_ready(&self, screen: &str) -> bool {
+            self.fake.input_ready(screen)
+        }
+
+        fn launch(
+            &self,
+            perms: &Permissions,
+            trust: &TrustPolicy,
+            cwd: &Path,
+            shell: ShellKind,
+        ) -> LaunchPlan {
+            self.fake.launch(perms, trust, cwd, shell)
+        }
+
+        fn pending_input(&self, screen: &str, sent: &str) -> Option<bool> {
+            let pending = self.fake.pending_input(screen, sent);
+            if self.check == Check::PasteVisibility && pending == Some(true) {
+                self.wait_for_redraw();
+                // Keep verification polling. Only a question check inside the loop
+                // can distinguish the new question from an unreadable paste.
+                return None;
+            }
+            pending
+        }
+
+        fn question_dialog(&self, screen: &str) -> bool {
+            // This profile still recognizes the retained question after the shell
+            // draws its prompt and draft below it.
+            if self.check == Check::ShellAfterPaste && screen.contains(QUESTION_FOOTER) {
+                self.wait_for_redraw();
+                return true;
+            }
+            let open = self.fake.question_dialog(screen);
+            if self.check == Check::Retry && !open && screen.contains("enter-received") {
+                // The peer kept the paste in its composer. The job reached the
+                // blocker check for a retry after its pending receipt.
+                self.wait_for_redraw();
+            }
+            open
+        }
+    }
+
+    /// Draw the question after verification starts, then fence the raw bytes with
+    /// the peer's acknowledgement of the user's answer.
+    fn input_after_redraw(check: Check) -> Vec<u8> {
+        let home = tempfile::tempdir().unwrap();
+        let mut spec = SpawnSpec::direct(
+            common::fake_agent_path(),
+            [
+                "question-dialog",
+                "--record-enter",
+                "--ignore-enter",
+                "--input-log",
+                "input.bin",
+            ],
+            home.path(),
+            PtySize { rows: 24, cols: 80 },
+        );
+        spec.env.set("HOME", home.path());
+        let (entered, reached) = bounded(1);
+        let (resume, resumed) = bounded(1);
+        let agent = AgentSpec {
+            timing: Timing {
+                submit_retry_max: 1,
+                submit_verify_window: WAIT,
+                ..long_window()
+            },
+            ..AgentSpec::new(Arc::new(PausedFake {
+                fake: FakeProfile::new("question-dialog", &[]),
+                check,
+                reached: entered,
+                resume: resumed,
+            }))
+        };
+        let (term, events) = common::agent::spawn_agent(spec, agent);
+        states_until(&term, &events, LAUNCH_WAIT, |s, _| s == AgentState::Ready);
+        let ticket = term.send("pending", submit());
+        reached
+            .recv_timeout(DELIVERY_WAIT)
+            .expect("delivery reached the selected check");
+        open_question(term.terminal());
+        drop(resume);
+        assert_eq!(
+            outcome(&term, &events, &ticket),
+            Aborted(AbortReason::DialogBlocking)
+        );
+        answer_question(term.terminal());
+        std::fs::read(home.path().join("input.bin")).unwrap()
+    }
+
+    #[test]
+    fn a_question_drawn_while_waiting_for_the_paste_gets_no_enter() {
+        assert_eq!(
+            input_after_redraw(Check::PasteVisibility),
+            b"\x1b[200~pending\x1b[201~\x1b[A1"
+        );
+    }
+
+    #[test]
+    fn a_question_drawn_before_an_opted_in_retry_gets_no_second_enter() {
+        assert_eq!(
+            input_after_redraw(Check::Retry),
+            b"\x1b[200~pending\x1b[201~\r\x1b[A1"
+        );
+    }
+
+    #[test]
+    fn a_retained_question_after_paste_cannot_skip_shell_cleanup() {
+        let (entered, reached) = bounded(1);
+        let (resume, resumed) = bounded(1);
+        let (term, events, _home) = shell(AgentSpec {
+            timing: Timing {
+                submit_verify_window: WAIT,
+                ..long_window()
+            },
+            ..AgentSpec::new(Arc::new(PausedFake {
+                fake: FakeProfile::new(
+                    "question-on-paste",
+                    &["--exit-on-input", "--keep-frame", "--title"],
+                ),
+                check: Check::ShellAfterPaste,
+                reached: entered,
+                resume: resumed,
+            }))
+        });
+        install_status_prompt(&term);
+        term.launch().unwrap();
+        states_until(&term, &events, LAUNCH_WAIT, |s, _| s == AgentState::Ready);
+        let ticket = term.send("# inherited draft", submit());
+        reached
+            .recv_timeout(DELIVERY_WAIT)
+            .expect("profile saw the question");
+        // The peer exited on readable stdin. Only the shell can echo this draft.
+        screen_contains(term.terminal(), "inherited draft", WAIT);
+        assert_eq!(term.terminal().foreground().owner, ForegroundOwner::Shell);
+        drop(resume);
+        assert_eq!(
+            outcome(&term, &events, &ticket),
+            Aborted(AbortReason::ShellOnly)
+        );
+        assert_eq!(term.state(), AgentState::ShellOnly);
+        wait_for_interrupted_prompt(&term);
+        // A surviving comment would swallow this command.
+        term.terminal().write(b"echo clean-$((6*7))\n").unwrap();
+        screen_contains(term.terminal(), "clean-42", WAIT);
+    }
 }
 
 /// A dialog drawn after the paste, while it settles, gets no Enter: the delivery fails and

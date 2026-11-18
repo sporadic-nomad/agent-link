@@ -4,7 +4,7 @@
 //!
 //! `agent-link-fake-agent <scene> [--sync] [--title] [--exit-on-input] [--reset-delay-ms N]
 //! [--reset-silence-ms N] [--dialog-after-ms N] [--swallow-ms N] [--keep-frame]
-//! [--hold-submit-display]` — an
+//! [--hold-submit-display] [--input-log PATH]` — an
 //! unknown scene, flag or value prints the error, the usage and the scene list, and exits 2.
 //!
 //! Screen (rows 1-based, absolute cursor moves + erase-line, any terminal size):
@@ -43,6 +43,8 @@
 //!   `--hold-submit-display`: additionally hold those updates until the test sends Down;
 //!   background titles continue, and releasing the display does not send another Enter.
 //!   `--sync`: every redraw inside DEC 2026 (`ESC[?2026h` … `ESC[?2026l`).
+//! - `--input-log PATH`: append each raw stdin read before decoding it. A later
+//!   acknowledged input fences the bytes seen by the peer.
 //! - `--exit-on-input`: reads nothing; exits 0 (the normal exit) as soon as input is
 //!   pending, leaving it unread for the shell — an agent that leaves before reading a
 //!   paste (unix: `poll`; Windows: the console handle's wait).
@@ -54,6 +56,8 @@
 //! | `swallow` | Enter < `--swallow-ms` (default 100) after a paste end is absorbed (`enter-absorbed` line, composer kept). |
 //! | `late-dialog` | Composer, then the dialog `--dialog-after-ms` (default 1500) after start (after the fresh screen if a reset is running then). |
 //! | `slow-dialog` | Nothing drawn until the dialog, `--dialog-after-ms` after start. |
+//! | `question-dialog` | Composer until the test sends Up to open a question. Only a typed `1` answers it. |
+//! | `question-on-paste` | A bracketed paste opens the same question over the draft. With `--exit-on-input`, draw it at exit while the paste is still unread. |
 //! | `exit-to-shell` | Exits 0 at the first submit, right after drawing `you: <text>` (no reply). |
 //! | `progress` | OSC `9;4;3` on each submit, `9;4;0` 400 ms after the last. |
 //! | `silent` | Never draws a composer or dialog; a submit still adds transcript lines. |
@@ -83,6 +87,7 @@ mod tty;
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
@@ -90,10 +95,13 @@ use std::time::{Duration, Instant};
 use input::{Key, Parser};
 use scenes::SCENES;
 
-/// Three lines, each under 80 columns.
-const USAGE: &str = "usage: agent-link-fake-agent <scene> [--sync] [--title] \
-                     [--exit-on-input]\n       [--reset-delay-ms N] [--reset-silence-ms N] \
-                     [--dialog-after-ms N]\n       [--swallow-ms N] [--keep-frame] [--hold-submit-display]";
+/// Usage lines fit an 80-column terminal.
+const USAGE: &str = concat!(
+    "usage: agent-link-fake-agent <scene> [--sync] [--title] [--exit-on-input]\n",
+    "       [--reset-delay-ms N] [--reset-silence-ms N] [--dialog-after-ms N]\n",
+    "       [--swallow-ms N] [--keep-frame] [--hold-submit-display]\n",
+    "       [--input-log PATH]",
+);
 const REPLY_AFTER: Duration = Duration::from_millis(300);
 const SPINNER_EVERY: Duration = Duration::from_millis(100);
 const PROGRESS_FOR: Duration = Duration::from_millis(400);
@@ -198,6 +206,7 @@ struct Opts {
     swallow: Duration,
     submit_display_delay: Duration,
     hold_submit_display: bool,
+    input_log: Option<File>,
 }
 
 impl Opts {
@@ -223,6 +232,7 @@ impl Opts {
             swallow: Duration::from_millis(100),
             submit_display_delay: Duration::ZERO,
             hold_submit_display: false,
+            input_log: None,
         };
         while let Some(flag) = args.next() {
             let slot = match flag.as_str() {
@@ -258,6 +268,17 @@ impl Opts {
                     opts.hold_submit_display = true;
                     continue;
                 }
+                "--input-log" => {
+                    let path = args.next().ok_or("--input-log needs a path")?;
+                    opts.input_log = Some(
+                        File::options()
+                            .append(true)
+                            .create(true)
+                            .open(path)
+                            .map_err(|e| format!("open input log: {e}"))?,
+                    );
+                    continue;
+                }
                 "--reset-delay-ms" => &mut opts.reset_delay,
                 "--reset-silence-ms" => &mut opts.reset_silence,
                 "--dialog-after-ms" => &mut opts.dialog_after,
@@ -287,6 +308,7 @@ enum Stage {
     Dialog {
         yes: bool,
     },
+    Question,
     Chat,
     /// `/new` submitted: `resetting conversation` at `visible_at` (`None` once drawn), the
     /// fresh screen at `fresh_at`.
@@ -379,9 +401,21 @@ impl App {
             };
             match input {
                 Ok(Input::Interrupt) => self.key(Key::Interrupt, Instant::now()),
-                Ok(Input::Unread) => return 0,
+                Ok(Input::Unread) => {
+                    if self.opts.scene == "question-on-paste" {
+                        self.stage = Stage::Question;
+                        self.draw();
+                    }
+                    return 0;
+                }
                 Ok(Input::Bytes(bytes)) if bytes.is_empty() => return 0, // stdin ended
                 Ok(Input::Bytes(bytes)) => {
+                    if let Some(log) = &mut self.opts.input_log {
+                        if let Err(e) = log.write_all(&bytes) {
+                            eprintln!("agent-link-fake-agent: write input log: {e}");
+                            return 1;
+                        }
+                    }
                     // One time for the whole read: a paste and an Enter read together
                     // arrived together.
                     let now = Instant::now();
@@ -531,6 +565,13 @@ impl App {
         }
         match self.stage {
             Stage::Blank | Stage::Resetting { .. } => {}
+            Stage::Question => {
+                if matches!(key, Key::Text(b'1')) {
+                    self.transcript.push("question answered".into());
+                    self.stage = Stage::Chat;
+                    self.draw();
+                }
+            }
             Stage::Dialog { yes } => match key {
                 Key::Up | Key::Down => {
                     self.stage = Stage::Dialog {
@@ -569,6 +610,13 @@ impl App {
                 }
                 Key::Paste(bytes) => {
                     self.paste(&bytes, now);
+                    if self.opts.scene == "question-on-paste" {
+                        self.stage = Stage::Question;
+                    }
+                    self.draw();
+                }
+                Key::Up if self.opts.scene == "question-dialog" => {
+                    self.stage = Stage::Question;
                     self.draw();
                 }
                 Key::Enter => self.enter(now),
@@ -696,6 +744,11 @@ impl App {
         let composer = matches!(self.stage, Stage::Chat) && self.opts.scene != "silent";
         let block: Vec<String> = match self.stage {
             Stage::Blank => return,
+            Stage::Question => vec![
+                "fake question dialog".into(),
+                "1. Continue".into(),
+                "press 1 to answer".into(),
+            ],
             Stage::Dialog { yes } => vec![
                 "fake trust dialog".into(),
                 format!("{} 1. No, exit", pointer(!yes)),

@@ -281,8 +281,9 @@ impl fmt::Debug for RpcLaunch {
 ///
 /// Screen checks take text, not a screen: either the visible screen's rows joined by `\n`,
 /// or — for [`dialog`](Self::dialog) only — the raw output stream decoded as UTF-8 (a
-/// rolling buffer, for a dialog drawn with cursor moves that the screen read missed). Both
-/// are normalised internally (see [`normalize`](crate::screen::normalize)).
+/// rolling buffer, for a dialog drawn with cursor moves that the screen read missed).
+/// The delivery thread calls [`question_dialog`](Self::question_dialog) on the visible
+/// rows drawn since launch. Startup classification and steering use [`dialog`](Self::dialog).
 ///
 /// A host profile implements [`id`](Self::id), [`dialog`](Self::dialog) and
 /// [`input_ready`](Self::input_ready); the launch and data methods have defaults (launch
@@ -319,8 +320,8 @@ pub trait AgentProfile: Send + Sync {
     fn dialog(&self, text: &str) -> Option<Dialog>;
 
     /// The ready composer is on `screen`. Pass the **current screen** only, never a rolling
-    /// buffer: old output in a buffer can fake readiness under a dialog. False while a
-    /// dialog is visible.
+    /// buffer: old output in a buffer can fake readiness under a dialog. Return false
+    /// while a startup dialog is visible. Delivery checks for questions separately.
     fn input_ready(&self, screen: &str) -> bool;
 
     /// Dialog first, then the ready composer, else [`ScreenState::Unknown`]: a dialog wins
@@ -343,6 +344,20 @@ pub trait AgentProfile: Send + Sync {
     /// after Enter. See [`detect::pending_input_default`] for the default rule.
     fn pending_input(&self, screen: &str, sent: &str) -> Option<bool> {
         detect::pending_input_default(screen, sent)
+    }
+
+    /// Whether a question or choice on the current screen owns keyboard input. Delivery
+    /// passes only the visible rows drawn since launch. Recognize the active dialog,
+    /// accounting for old prompts or quoted instructions above a redrawn composer.
+    ///
+    /// A match stops the pending paste or Enter. After a paste, delivery rechecks the
+    /// foreground owner before reporting
+    /// [`AbortReason::DialogBlocking`](super::AbortReason::DialogBlocking).
+    /// This hook defaults to `false`. See [`detect::dialog_at_bottom`]
+    /// for matching a recorded layout. Reserve [`dialog`](Self::dialog) for startup
+    /// prompts because the startup gate may independently steer prompts it recognizes.
+    fn question_dialog(&self, _screen: &str) -> bool {
+        false
     }
 
     /// Operation-scoped declarations and provenance, independent of runtime readiness.
@@ -479,6 +494,7 @@ mod tests {
         let plan = p.launch(&custom, &trust, Path::new("/x"), ShellKind::Cmd);
         assert_eq!(plan.args, ["--go"]);
         assert_eq!(plan.env, [("K".into(), "v".into())]);
+        assert!(!p.question_dialog("Choose an option\nEnter to confirm"));
         assert!(p.launchers().is_empty());
         assert_eq!(p.reset_command(), None);
         assert_eq!(p.signals(), SignalHints::default());

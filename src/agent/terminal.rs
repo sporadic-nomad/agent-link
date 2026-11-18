@@ -379,15 +379,15 @@ impl AgentTerminal {
     /// A closed session or failed monitor similarly refuses new work as
     /// [`AbortReason::NotConnected`] without queueing an event.
     ///
-    /// A delivery waits until the agent is ready (a dialog left to the user keeps it
+    /// A delivery waits until the agent is ready (a startup dialog left to the user keeps it
     /// waiting — until the agent leaves: the shell back in front ends the wait, though the
     /// dialog may stay on screen; readiness is read only from what the agent drew since its
     /// launch line), then checks that the agent, not the shell, owns the terminal — every send,
     /// a paste-only one too, before the lull, again right before the paste and right
     /// before every Enter. With the shell in front before the paste it launches the agent
     /// once more and starts over; if the shell is still there it takes the shell fallback
-    /// (`opts.on_shell`). It waits for a lull in the output, never pastes over a dialog,
-    /// pastes the text as one bracketed paste (no newline), and for a submit writes the
+    /// (`opts.on_shell`). It waits for a lull in the output, checks the screen for a
+    /// dialog, pastes the text as one bracketed paste (no newline), and for a submit writes the
     /// Enter only after observing the pasted text. Fresh, stable evidence that the text
     /// left a readable composer verifies submission. Silence, unrelated output and an
     /// unreadable composer end
@@ -395,6 +395,15 @@ impl AgentTerminal {
     /// before Enter. Retries are disabled by default; opting into them can submit twice
     /// if the agent accepts input before redrawing its composer. An unverified outcome
     /// must not be automatically resent.
+    ///
+    /// A question recognized by [`AgentProfile::question_dialog`] at the commit point
+    /// stops even a paste-only send with [`AbortReason::DialogBlocking`]. A match after
+    /// the paste stops the next Enter and rechecks foreground ownership. The agent in
+    /// front gives `DialogBlocking`. A shell that took back the terminal gets Ctrl-C to
+    /// clear the inherited draft and the ticket reports [`AbortReason::ShellOnly`].
+    /// Other or unknown owners give [`AbortReason::ForegroundUnproven`]. Inspect the
+    /// session before resending because the paste and an earlier Enter attempt may have
+    /// reached the agent. The screen and foreground can change between a check and a write.
     ///
     /// **The text never runs as a shell command** where the crate can tell the shell owns
     /// the terminal (an exact foreground answer, or a heuristic one under
@@ -486,6 +495,7 @@ impl AgentTerminal {
     /// [`AbortReason::Unsupported`](super::AbortReason::Unsupported) in its turn (after the
     /// deliveries queued before it; nothing typed, no launch) — with its
     /// [`Event::Delivery`].
+    /// The same question checks protect both the reset paste and its Enter.
     pub fn reset(&self) -> Ticket {
         match self.ctl.cfg.reset_command {
             Some(command) => self.send(
@@ -514,6 +524,8 @@ impl AgentTerminal {
     ///    to send even if the message went stale meanwhile). `opts.submit` and
     ///    `opts.on_shell` are not used.
     ///
+    /// Both halves check for questions. If the reset ends with [`AbortReason::DialogBlocking`],
+    /// the composite ticket reports that reason and the message is skipped.
     /// A stopped agent is launched first (as for `send`). Ends
     /// [`AbortReason::Unsupported`](super::AbortReason::Unsupported) without a reset
     /// command and [`AbortReason::EmptyText`](super::AbortReason::EmptyText) for a text with

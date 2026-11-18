@@ -71,9 +71,10 @@ pub struct Timing {
     /// Submit verification requires this much output quiet or a readable composer verdict
     /// that stays stable across polls during continuing output. Default 250 ms.
     pub submit_verify_quiet: Duration,
-    /// Per Enter: time for it to be processed and redrawn before the composer is checked
-    /// (also the retry cooldown). Default 700 ms. Known reset commands use at least
-    /// `startup_max` and are never retried.
+    /// Time to obtain a current dialog check before input, to observe the paste, or to
+    /// verify each Enter. Default 700 ms per check. A pending composer permits an
+    /// opted-in retry only after the Enter's window. Known reset commands allow at
+    /// least `startup_max` for their Enter receipt and are never retried.
     pub submit_verify_window: Duration,
     /// How often submit verification polls. Default 100 ms.
     pub submit_verify_poll: Duration,

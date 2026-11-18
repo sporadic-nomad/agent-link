@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 
+use crate::agent::leftover::Leftover;
 use crate::agent::state::{AgentProgram, Config, Controller};
 use crate::agent::{
     AgentProfile, Dialog, DialogKind, ForegroundPolicy, SendOptions, ShellKind, Timing, TrustPolicy,
@@ -23,6 +24,7 @@ const WINDOW: Duration = Duration::from_millis(800);
 enum Callback {
     Composer,
     Dialog,
+    Question,
 }
 
 struct Blocked {
@@ -56,6 +58,15 @@ impl AgentProfile for Blocked {
     }
     fn input_ready(&self, _: &str) -> bool {
         true
+    }
+    fn question_dialog(&self, screen: &str) -> bool {
+        let question = screen.contains("QUESTION");
+        self.block(Callback::Question);
+        assert!(
+            !screen.contains("PANIC"),
+            "scripted question predicate panic"
+        );
+        question
     }
     fn pending_input(&self, screen: &str, sent: &str) -> Option<bool> {
         let pending = Some(screen.contains(sent));
@@ -169,8 +180,9 @@ impl Session {
 
     fn draw(&self, text: &str) -> Instant {
         let after = self.ctl.term().output_chunks();
+        let rows = text.replace('\n', "\r\n");
         self.term()
-            .write(format!("\x1b[2J\x1b[H{text}").as_bytes())
+            .write(format!("\x1b[2J\x1b[H{rows}").as_bytes())
             .unwrap();
         self.wait_screen(text, after)
     }
@@ -243,6 +255,114 @@ fn stale_absence_of_dialog_cannot_authorize_enter() {
 }
 
 #[test]
+fn a_redraw_during_the_question_check_discards_both_stale_verdicts() {
+    let open = "QUESTION\n> pending";
+    let clear = "> pending (clear)";
+    for (before, after, expected) in [
+        (clear, open, Err(AbortReason::DialogBlocking)),
+        (open, clear, Ok(())),
+    ] {
+        let (session, entered, resume) = Session::new(Callback::Question, false);
+        session.draw(before);
+        let mut runner = session.runner();
+        let worker = std::thread::spawn(move || {
+            let job = MessageJob::new(TicketId(1), "pending", SendOptions::default());
+            runner.wait_visible_paste(&job, 0)
+        });
+        entered.recv_timeout(WAIT).expect("question check started");
+        session.draw(after);
+        drop(resume);
+        assert_eq!(worker.join().unwrap(), expected, "redraw to {after:?}");
+    }
+}
+
+#[test]
+fn a_question_takes_precedence_over_startup_and_composer_callbacks() {
+    for callback in [Callback::Dialog, Callback::Composer] {
+        let (session, entered, resume) = Session::new(callback, false);
+        drop(resume);
+        session.draw("QUESTION DIALOG\n> pending");
+        let job = MessageJob::new(TicketId(1), "pending", SendOptions::default());
+        let mut runner = session.runner();
+        let result = if callback == Callback::Dialog {
+            runner.no_dialog_before_enter(job.ticket)
+        } else {
+            runner.wait_visible_paste(&job, 0)
+        };
+        assert_eq!(result, Err(AbortReason::DialogBlocking));
+        assert!(entered.is_empty(), "a lower-priority callback ran");
+    }
+}
+
+#[test]
+fn a_question_after_enter_can_accompany_a_verified_submit() {
+    let (session, entered, resume) = Session::new(Callback::Question, false);
+    drop(resume);
+    session.draw("> pending");
+    let enter_fence = session.ctl.term().output_chunks();
+    session.draw("QUESTION\n> empty");
+    assert_eq!(
+        session.runner().wait_submit_outcome("pending", enter_fence),
+        Ok(Submit::Submitted)
+    );
+    assert!(entered.is_empty(), "reading the receipt needs no input");
+}
+
+#[test]
+fn an_old_question_is_ignored_while_the_composer_can_span_the_launch_boundary() {
+    let (session, _, resume) = Session::new(Callback::Dialog, false);
+    drop(resume);
+    session.draw("QUESTION\n> first line");
+    let front = session.ctl.read_front();
+    let leftover = Leftover::new(session.term().screen().unwrap().rows);
+    session.ctl.update_quietly(|st, now| {
+        st.type_launch("agent\n", now, &front, leftover);
+    });
+    let paste_fence = session.ctl.term().output_chunks();
+    // The new frame preserves the prior rows, then adds the continuation of the paste.
+    session.draw("QUESTION\n> first line\nsecond line");
+    let job = MessageJob::new(
+        TicketId(1),
+        "first line\nsecond line",
+        SendOptions::default(),
+    );
+    let mut runner = session.runner();
+    assert_eq!(runner.no_dialog_before_enter(job.ticket), Ok(()));
+    assert_eq!(runner.wait_visible_paste(&job, paste_fence), Ok(()));
+}
+
+#[test]
+fn a_panicking_question_predicate_cannot_authorize_a_paste() {
+    let (session, entered, resume) = Session::new(Callback::Question, false);
+    session.draw("PANIC");
+    assert!(session.ctl.evaluate_gate(false));
+    let mut runner = session.runner();
+    let worker = std::thread::spawn(move || {
+        let mut job = MessageJob::new(TicketId(1), "must stay unsent", SendOptions::default());
+        runner.process_message(&mut job)
+    });
+    entered
+        .recv_timeout(WAIT)
+        .expect("commit-point question check started");
+    session.draw("> ready");
+    drop(resume);
+    assert_eq!(worker.join().unwrap(), Err(AbortReason::SubmitUnverified));
+
+    // cat echoes writes in order. Seeing this later input fences any attempted paste.
+    let after = session.ctl.term().output_chunks();
+    session.term().write(b" fence").unwrap();
+    session.wait_screen(" fence", after);
+    assert!(
+        !session
+            .term()
+            .screen()
+            .unwrap()
+            .text()
+            .contains("must stay unsent")
+    );
+}
+
+#[test]
 fn cancellation_is_rechecked_after_a_composer_callback() {
     let (session, entered, resume) = Session::new(Callback::Composer, false);
     session.draw("> empty");
@@ -254,32 +374,57 @@ fn cancellation_is_rechecked_after_a_composer_callback() {
     assert_eq!(worker.join().unwrap(), Err(AbortReason::Disposed));
 }
 
-#[test]
-fn continuously_stale_callbacks_do_not_extend_verification_forever() {
-    let (session, entered, resume) = Session::new(Callback::Composer, true);
-    session.draw("> empty");
+fn during_repeated_redraws<T: Send + 'static>(
+    callback: Callback,
+    text: &str,
+    check: impl FnOnce(&mut Runner) -> T + Send + 'static,
+) -> T {
+    let (session, entered, resume) = Session::new(callback, true);
+    session.draw(text);
     let mut runner = session.runner();
     let (done, result) = bounded(1);
+    let started = Instant::now();
     let worker = std::thread::spawn(move || {
-        let _ = done.send(runner.wait_submit_outcome("pending", 0));
+        let _ = done.send(check(&mut runner));
     });
-    let deadline = Instant::now() + WAIT;
+    let timeout = crossbeam_channel::after(WAIT);
     let mut changes = 0;
     let outcome = loop {
         crossbeam_channel::select! {
             recv(result) -> result => break result.unwrap(),
             recv(entered) -> _ => {
                 changes += 1;
-                session.draw(&format!("> changed {changes}"));
+                session.draw(&format!("{text} {changes}"));
                 resume.0.send(()).unwrap();
             },
-            default(deadline.saturating_duration_since(Instant::now())) => panic!("stale callbacks extended the verification deadline"),
+            recv(timeout) -> _ => panic!("stale callbacks extended the verification deadline"),
         }
     };
     drop(resume);
     worker.join().unwrap();
     assert!(changes > 1);
+    assert!(
+        started.elapsed() >= WINDOW,
+        "gave up before the submit window expired"
+    );
+    outcome
+}
+
+#[test]
+fn continuously_stale_callbacks_do_not_extend_verification_forever() {
+    let outcome = during_repeated_redraws(Callback::Composer, "> empty", |runner| {
+        runner.wait_submit_outcome("pending", 0)
+    });
     assert_eq!(outcome, Ok(Submit::Unverified));
+}
+
+#[test]
+fn continuously_stale_question_checks_expire_even_when_the_paste_is_visible() {
+    let outcome = during_repeated_redraws(Callback::Question, "> pending", |runner| {
+        let job = MessageJob::new(TicketId(1), "pending", SendOptions::default());
+        runner.wait_visible_paste(&job, 0)
+    });
+    assert_eq!(outcome, Err(AbortReason::SubmitUnverified));
 }
 
 #[test]
@@ -301,9 +446,7 @@ fn profile_observations_survive_gate_polling_but_not_resize_or_relaunch() {
         session.draw("> empty");
         let mut runner = session.runner();
         let worker = std::thread::spawn(move || {
-            runner.profile_read(false, |profile, screen| {
-                profile.pending_input(screen, "pending")
-            })
+            runner.profile_read(|profile, screen, _| profile.pending_input(screen, "pending"))
         });
         entered.recv_timeout(WAIT).unwrap();
         match change {

@@ -9,7 +9,8 @@
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-use agent_link::agent::detect::{from_last, has_all, steer_two};
+use agent_link::Terminal;
+use agent_link::agent::detect::{dialog_at_bottom, from_last, has_all, steer_two};
 use agent_link::agent::{
     AgentProfile, Dialog, DialogKind, LaunchPlan, Permissions, ShellKind, SignalHints, TrustPolicy,
     Unlock,
@@ -17,7 +18,7 @@ use agent_link::agent::{
 use agent_link::screen::normalize;
 use regex::Regex;
 
-use super::fake_agent_path;
+use super::{WAIT, fake_agent_path, screen_contains};
 
 // The binary's own list, so the two cannot drift.
 #[path = "../support/fake_agent/scenes.rs"]
@@ -31,6 +32,7 @@ pub const DIALOG_HEADER: &str = "fake trust dialog";
 /// The fake's ready footer (normalised). Matched in full: the shell's echo of the launch
 /// line for the `ready` scene contains `fake-agent ready`.
 pub const READY_MARKER: &str = "fake-agent ready · esc to interrupt";
+pub const QUESTION_FOOTER: &str = "press 1 to answer";
 const YES: &str = "yes, trust this folder";
 const NO: &str = "no, exit";
 
@@ -77,6 +79,18 @@ pub fn fake_profile(scene: &str, flags: &[&str]) -> Arc<dyn AgentProfile> {
     Arc::new(FakeProfile::new(scene, flags))
 }
 
+/// Draw the question on demand in the `question-dialog` scene.
+pub fn open_question(term: &Terminal) {
+    term.write(b"\x1b[A").unwrap();
+    screen_contains(term, QUESTION_FOOTER, WAIT);
+}
+
+/// Wait for the peer to consume the answer and all input queued before it.
+pub fn answer_question(term: &Terminal) {
+    term.write(b"1").unwrap();
+    screen_contains(term, "question answered", WAIT);
+}
+
 /// A profile like [`fake_profile`] whose launch line is `false`: the "agent" exits at once
 /// and the shell stays in front.
 pub fn unlaunchable_profile() -> Arc<dyn AgentProfile> {
@@ -119,6 +133,16 @@ impl AgentProfile for FakeProfile {
 
     fn input_ready(&self, screen: &str) -> bool {
         normalize(screen).contains(READY_MARKER) && self.dialog(screen).is_none()
+    }
+
+    fn question_dialog(&self, screen: &str) -> bool {
+        dialog_at_bottom(
+            screen,
+            24,
+            "fake question dialog",
+            &["1. continue"],
+            QUESTION_FOOTER,
+        )
     }
 
     fn launchers(&self) -> &'static [&'static str] {

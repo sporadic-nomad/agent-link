@@ -1,6 +1,6 @@
 //! Shared helpers for [`AgentProfile`](super::AgentProfile) implementations: marker
-//! matching on normalised text, reading a dialog's pointer, and the composer's
-//! pending-input check.
+//! matching on normalised text, recognising a dialog at the bottom of the screen,
+//! reading a dialog's pointer, and the composer's pending-input check.
 //!
 //! The built-in profiles are made of them; use them to write a profile for a CLI the crate
 //! does not know. Match on [`normalize`]d text, and give a dialog's key only when the
@@ -66,6 +66,50 @@ pub fn has_any(text: &str, fragments: &[&str]) -> bool {
 /// absent: older renders of a dialog in a rolling buffer cannot vote.
 pub fn from_last<'t>(text: &'t str, header: &str) -> &'t str {
     text.rfind(header).map_or(text, |at| &text[at..])
+}
+
+/// Whether the current visible screen ends with the specified dialog. The window covers
+/// at most `rows` rows up to and including the lowest row with a letter or digit.
+/// Only blank rows and recognized horizontal separators (such as `╰──╯`) may follow it.
+/// A bare composer prompt such as `>` or `❯` below the footer closes the dialog block.
+///
+/// Supply markers in [normalised](normalize) form. The last `header` in the window
+/// starts the block, which must contain every fragment and end with `end`. A missing
+/// header, an empty header or footer, or a zero-row window yields `false`.
+pub fn dialog_at_bottom(
+    screen: &str,
+    rows: usize,
+    header: &str,
+    fragments: &[&str],
+    end: &str,
+) -> bool {
+    if rows == 0 || header.is_empty() || end.is_empty() {
+        return false;
+    }
+    let Some(last_word_char) = screen.rfind(char::is_alphanumeric) else {
+        return false;
+    };
+    // Keep the rest of this row, including any punctuation in the footer.
+    let end_of_row = screen[last_word_char..]
+        .find('\n')
+        .map_or(screen.len(), |offset| last_word_char + offset);
+    if screen[end_of_row..]
+        .lines()
+        .any(|row| !row.trim().is_empty() && !is_rule(row))
+    {
+        return false;
+    }
+    let content = &screen[..end_of_row];
+    let start = content
+        .rmatch_indices('\n')
+        .nth(rows - 1)
+        .map_or(0, |(offset, _)| offset + 1);
+    let window = normalize(&content[start..]);
+    let Some(at) = window.rfind(header) else {
+        return false;
+    };
+    let block = &window[at..];
+    block.ends_with(end) && has_all(block, fragments)
 }
 
 /// The option the LAST match of `pointer` in `text` names (its first capture group):
@@ -261,6 +305,58 @@ mod tests {
         assert!(!has_any("a b c", &["d"]));
         assert_eq!(from_last("x h1 y h1 z", "h1"), "h1 z");
         assert_eq!(from_last("x y", "h1"), "x y");
+    }
+
+    #[test]
+    fn a_dialog_ends_at_its_footer_above_blank_rows_and_box_edges() {
+        let drawn = "history\nChoose   one\n1. Café\nPress   Enter (Y)\n╰──╯\n  \n";
+        let open = |s: &str| dialog_at_bottom(s, 3, "choose one", &["café"], "enter (y)");
+        assert!(open(drawn));
+        assert!(!open(&drawn.replace("Café", "Other")));
+        // A redrawn composer and a status line both put the former dialog in history.
+        assert!(!open(&format!("{drawn}❯ new draft")));
+        assert!(!open(&format!("{drawn}2")));
+        assert!(!open(&format!("{drawn}新")));
+    }
+
+    #[test]
+    fn a_bare_composer_below_a_question_footer_closes_the_dialog() {
+        let dialog = "Choose one\n1. Continue\nEnter to select\n╰──╯";
+        for row in [">", "❯ ", "›", "│ ❯  │", "*"] {
+            let screen = format!("{dialog}\n{row}\n────\n");
+            assert!(
+                !dialog_at_bottom(&screen, 24, "choose one", &["continue"], "enter to select"),
+                "{row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_quoted_footer_or_fragments_from_an_older_render_are_insufficient() {
+        let open = |s: &str| dialog_at_bottom(s, 24, "choose one", &["1. first"], "enter (y)");
+        assert!(!open("The menu says 1. first, then Enter (Y)"));
+        assert!(!open(
+            "Choose one\n1. First\nChoose one\n2. Second\nEnter (Y)"
+        ));
+        assert!(!open("Choose one\n1. First\nEnter (Y) ends the prompt"));
+    }
+
+    #[test]
+    fn the_dialog_window_counts_interior_blank_rows() {
+        let drawn = "Choose one\n\nYes\nEnter\n\n────";
+        let open = |rows| dialog_at_bottom(drawn, rows, "choose one", &["yes"], "enter");
+        assert!(!open(0));
+        assert!(!open(3));
+        assert!(open(4));
+        assert!(open(usize::MAX));
+    }
+
+    #[test]
+    fn dialog_matching_needs_screen_text_and_nonempty_markers() {
+        assert!(!dialog_at_bottom("", 24, "choose", &[], "enter"));
+        assert!(!dialog_at_bottom("  \n❯\n╰──╯", 24, "❯", &[], "╯"));
+        assert!(!dialog_at_bottom("Choose Enter", 24, "", &[], "enter"));
+        assert!(!dialog_at_bottom("Choose Enter", 24, "choose", &[], ""));
     }
 
     #[test]

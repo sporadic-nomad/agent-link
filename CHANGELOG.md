@@ -6,6 +6,18 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- The default `agent` feature checks `AgentProfile::question_dialog` before pasting,
+  while waiting for the paste to appear, and before each Enter. A matching question
+  stops delivery with `AbortReason::DialogBlocking` (`dialog_blocking`). Inspect the
+  session before resending because a paste or an earlier Enter may have reached it.
+  After a post-paste match, a shell that regained the terminal gets Ctrl-C and the
+  outcome is `ShellOnly`. Other or unknown foreground owners give `ForegroundUnproven`.
+  Profiles can match recorded layouts with `agent::detect::dialog_at_bottom`, which
+  treats a bare composer prompt below the footer as the end of the question.
+  The hook defaults to `false` and currently requires a custom profile.
+
 ## [0.2.0] — 2026-11-17
 
 ### Fixed

@@ -202,7 +202,7 @@ fn a_leftover_composer_does_not_ready_the_gate() {
     let _ = st.type_launch("agent\n", now, &look(None, 0), leftover);
     st.output_for_test(b"^C", Some("old READY\n$ ^C\n$ "), now);
     assert!(!st.gate.ready(), "the leftover composer");
-    assert_eq!(st.fresh_screen("old READY\n$ ^C\n$ "), "$ ^C\n$ ");
+    assert_eq!(st.leftover().fresh("old READY\n$ ^C\n$ "), "$ ^C\n$ ");
     st.output_for_test(b"new", Some("old READY\n$ ^C\n$ agent\nnew READY"), now);
     assert!(st.gate.ready(), "the new agent's composer");
 }

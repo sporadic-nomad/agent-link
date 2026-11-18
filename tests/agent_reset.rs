@@ -19,7 +19,7 @@ use common::agent::states_until;
 use common::delivery::{
     DELIVERY_WAIT, fake, long_window, outcome, outcome_with_states, shell, submit,
 };
-use common::fake::{READY_MARKER, fake_profile};
+use common::fake::{QUESTION_FOOTER, READY_MARKER, answer_question, fake_profile};
 use common::{LAUNCH_WAIT, WAIT, bottom_rows, logger, screen_contains, wait_screen, wait_until};
 
 use DeliveryOutcome::{Aborted, Delivered};
@@ -65,6 +65,22 @@ fn a_reset_without_a_reset_command_is_unsupported() {
         !screen.text().contains("never-"),
         "{}",
         bottom_rows(&screen)
+    );
+}
+
+#[test]
+fn a_question_opened_by_the_reset_paste_blocks_its_enter_and_follow_up() {
+    let (term, events, home) = fake("question-on-paste", &["--input-log", "input.bin"]);
+    let both = term.reset_and_send("follow-up payload", submit());
+    assert_eq!(
+        outcome(&term, &events, &both),
+        Aborted(AbortReason::DialogBlocking)
+    );
+    screen_contains(term.terminal(), QUESTION_FOOTER, WAIT);
+    answer_question(term.terminal());
+    assert_eq!(
+        std::fs::read(home.path().join("input.bin")).unwrap(),
+        b"\x1b[200~/new\x1b[201~1"
     );
 }
 

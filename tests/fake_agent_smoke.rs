@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use agent_link::agent::{AgentProfile, Dialog, DialogKind, ScreenState, ShellKind, TrustKey};
 use agent_link::screen::ScreenSnapshot;
 use agent_link::{Event, ForegroundOwner, ProgressState, PtySize, SpawnSpec, Terminal};
-use common::fake::{FAKE_SCENES, fake_profile, launch_line, unlaunchable_profile};
+use common::fake::{
+    FAKE_SCENES, QUESTION_FOOTER, answer_question, fake_profile, launch_line, unlaunchable_profile,
+};
 use common::{
     LAUNCH_WAIT, WAIT, bottom_rows, fake_agent_path, logger, screen_contains, start_shell,
     wait_event, wait_screen, wait_until,
@@ -95,12 +97,12 @@ fn dialog(key: TrustKey) -> ScreenState {
     })
 }
 
-/// The fake run directly on a 40x120 PTY.
+/// The fake run directly on a PTY wide enough for its usage and scene list.
 fn direct(args: &[&str]) -> (Terminal, Receiver<Event>, TempDir) {
     let home = tempfile::tempdir().unwrap();
     let size = PtySize {
         rows: 40,
-        cols: 120,
+        cols: 160,
     };
     let spec = SpawnSpec::direct(fake_agent_path(), args.iter().copied(), home.path(), size);
     let (term, events) = common::spawn(spec).unwrap();
@@ -204,6 +206,28 @@ fn no_in_the_trust_dialog_says_bye_and_exits_1() {
     let screen = term.screen().unwrap();
     assert_eq!(content(&screen), ["fake-agent v1 (trust)", "bye"]);
     assert!(!screen.bracketed_paste, "bracketed paste is off after exit");
+}
+
+#[test]
+fn the_question_scenes_wait_for_a_typed_answer() {
+    for (scene, trigger, draft) in [
+        ("question-dialog", b"\x1b[A".as_slice(), ">"),
+        ("question-on-paste", PASTE_3, "> [Pasted text #1 +3 lines]"),
+    ] {
+        let fake = Fake::launch(scene, &[]);
+        assert!(!fake.profile.question_dialog(&fake.ready().text()));
+        fake.term.write(trigger).unwrap();
+        let screen = fake.contains(QUESTION_FOOTER);
+        assert!(fake.profile.question_dialog(&screen.text()), "{scene}");
+        assert_eq!(fake.state(), ScreenState::Unknown);
+
+        // A pasted option and Enter both belong to the question until the user types 1.
+        fake.term.write(b"\x1b[200~1\x1b[201~\r").unwrap();
+        answer_question(&fake.term);
+        let screen = fake.ready();
+        assert_eq!(content(&screen)[1..], ["question answered", draft, FOOTER]);
+        assert!(!fake.profile.question_dialog(&screen.text()));
+    }
 }
 
 #[test]
@@ -592,6 +616,7 @@ fn a_bad_scene_or_flag_exits_2_with_usage() {
                 "usage: agent-link-fake-agent <scene> [--sync] [--title] [--exit-on-input]",
                 "       [--reset-delay-ms N] [--reset-silence-ms N] [--dialog-after-ms N]",
                 "       [--swallow-ms N] [--keep-frame] [--hold-submit-display]",
+                "       [--input-log PATH]",
                 &scenes,
             ],
             "{args:?}"

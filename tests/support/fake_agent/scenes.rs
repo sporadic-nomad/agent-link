@@ -9,6 +9,8 @@ pub const SCENES: &[&str] = &[
     "swallow",
     "late-dialog",
     "slow-dialog",
+    "question-dialog",
+    "question-on-paste",
     "exit-to-shell",
     "progress",
     "silent",

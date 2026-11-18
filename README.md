@@ -223,7 +223,7 @@ after Enter. Screen evidence is revalidated after profile callbacks; stale resul
 cannot confirm submission. It is terminal evidence, not a protocol-level acknowledgement. `PastedUnsubmitted`: the shell, not the agent, was in front after one
 relaunch, so a one-line text was left on the shell's input line without Enter. `Aborted`
 names why nothing (or nothing more) was typed: `ShellOnly`, `ForegroundUnproven` (another
-program owns the terminal), `TrustPromptBlocking`, `SubmitUnverified`, … The example exits
+program owns the terminal), `TrustPromptBlocking`, `DialogBlocking`, `SubmitUnverified`, … The example exits
 0 only on `Delivered`.
 
 ### A JSON-lines child
@@ -360,8 +360,12 @@ result??;
   composer. Noise, silence and an unreadable composer do not prove delivery. Reset
   commands are never retried. Ordinary Enter retries are disabled by default; opting
   in requires pending text and can submit twice when a CLI redraws late.
-  `SubmitUnverified` can occur before or after Enter: do not automatically resend the
-  message. A foreground check and the subsequent write are not atomic.
+  A profile that recognizes an open question stops even a paste-only send with
+  `DialogBlocking`. A match after the paste stops the next Enter, including an opted-in
+  retry. If the shell now owns the terminal, delivery sends Ctrl-C to clear its draft
+  and reports `ShellOnly`. After `DialogBlocking` or `SubmitUnverified`, inspect the
+  session before sending again because input may already have reached the agent. The
+  screen and foreground can change between the checks and the PTY write.
 - **Input limits.** `InputLimits`, `AgentLimits` and `RpcLimits` bound pending input,
   including active writes and agent completions awaiting publication. Oversized or
   saturated input is refused without waiting on the child. Agent admission rejections
@@ -450,6 +454,10 @@ Profiles read screen text, so a reworded CLI release can break detection; the co
 then logs a `startup markers not recognised` report. Replace a built-in with
 `ProfileRegistry::register`, or write your own `AgentProfile` with the helpers in
 `agent::detect`.
+
+Question recognition currently requires a custom `AgentProfile::question_dialog`
+predicate. The built-in profiles use the default `false` until versioned recordings
+of active questions are available.
 
 Compatibility declarations are available through `AgentProfile::compatibility()`;
 they distinguish supported, unsupported and unknown operations and identify their

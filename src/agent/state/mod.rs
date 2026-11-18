@@ -337,7 +337,7 @@ impl CtlState {
     /// The agent is launched in the shell now: arms the gate and returns what to type — the
     /// input line cleared first (an unsubmitted paste or a draft may sit there), then
     /// `line`. `leftover` is the screen read before: from now on only the rows drawn since
-    /// count as the agent's ([`fresh_screen`](Self::fresh_screen)). With the shell read in
+    /// count as the agent's ([`Leftover::fresh`]). With the shell read in
     /// front (`front.shell`) the agent's program is expected
     /// ([`observe`](Self::observe)) and a Ctrl-C goes first: one
     /// line kill leaves the earlier lines of a multi-line buffer in zsh (they would run with
@@ -531,11 +531,10 @@ impl CtlState {
         self.lifecycle_revision
     }
 
-    /// The part of `screen` (the current screen's rows joined by `\n`) drawn since the last
-    /// launch line was typed — what the agent's state is read from. The screen it was typed
-    /// over can hold the last agent's frame, ready composer and dialogs included.
-    pub(crate) fn fresh_screen<'a>(&self, screen: &'a str) -> &'a str {
-        self.leftover.fresh(screen)
+    /// The rows present at launch. A delivery can clone this snapshot under the lock
+    /// and find the fresh part of its current screen after releasing the lock.
+    pub(super) fn leftover(&self) -> &Leftover {
+        &self.leftover
     }
 
     /// A launch line is held back until the shell took a Ctrl-C: the agent is not started
