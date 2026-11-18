@@ -4,22 +4,26 @@
 
 mod common;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use agent_link::agent::{
     AbortReason, AgentProfile, AgentSpec, AgentTerminal, DeliveryOutcome, Dialog, SendOptions,
+    Ticket,
 };
 use agent_link::{Event, PtySize, SpawnMode, SpawnSpec};
 use crossbeam_channel::{Receiver, Sender, bounded};
 
+use common::fake::{READY_MARKER, RESET_REFUSAL};
 use common::{LAUNCH_WAIT, WAIT, wait_until};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BlockAt {
     Dialog,
     InputReady,
+    ResetRejected,
 }
 
 struct BlockingProfile {
@@ -30,11 +34,8 @@ struct BlockingProfile {
 }
 
 impl BlockingProfile {
-    fn block(&self, at: BlockAt, screen: &str) {
-        if self.at == at
-            && screen.contains("BLOCK HERE")
-            && !self.blocked.swap(true, Ordering::SeqCst)
-        {
+    fn block(&self, at: BlockAt, matched: bool) {
+        if self.at == at && matched && !self.blocked.swap(true, Ordering::SeqCst) {
             let _ = self.entered.send(());
             let _ = self.resume.recv();
         }
@@ -46,12 +47,20 @@ impl AgentProfile for BlockingProfile {
         "blocked-profile"
     }
     fn dialog(&self, screen: &str) -> Option<Dialog> {
-        self.block(BlockAt::Dialog, screen);
+        self.block(BlockAt::Dialog, screen.contains("BLOCK HERE"));
         None
     }
     fn input_ready(&self, screen: &str) -> bool {
-        self.block(BlockAt::InputReady, screen);
-        screen.contains("BLOCK HERE")
+        self.block(BlockAt::InputReady, screen.contains("BLOCK HERE"));
+        screen.contains("BLOCK HERE") || screen.contains(READY_MARKER)
+    }
+    fn reset_command(&self) -> Option<&'static str> {
+        Some("/new")
+    }
+    fn reset_rejected(&self, fresh_screen: &str) -> bool {
+        let rejected = fresh_screen.lines().any(|line| line == RESET_REFUSAL);
+        self.block(BlockAt::ResetRejected, rejected);
+        rejected
     }
 }
 
@@ -66,7 +75,8 @@ impl Drop for Resume {
 
 fn spawn(
     at: BlockAt,
-    script: &str,
+    program: impl Into<PathBuf>,
+    args: &[&str],
 ) -> (
     AgentTerminal,
     Receiver<Event>,
@@ -91,8 +101,8 @@ fn spawn(
         },
     );
     spec.mode = SpawnMode::Direct {
-        program: "/bin/sh".into(),
-        args: vec!["-c".into(), script.into()],
+        program: program.into(),
+        args: args.iter().map(Into::into).collect(),
     };
     spec.env.set("HOME", home.path()).set("ENV", "");
     let (term, events) = {
@@ -102,37 +112,60 @@ fn spawn(
     (term, events, entered, Resume(resume), home)
 }
 
+/// Capture the drop result and receipt before releasing the host callback. Release and
+/// join even if teardown had to wait, so a failing assertion leaves no worker parked.
+fn assert_disposal(term: AgentTerminal, ticket: Ticket, resume: Resume) {
+    let (done, dropped) = bounded(1);
+    let closer = std::thread::spawn(move || {
+        drop(term);
+        let _ = done.send(());
+    });
+    let finished = dropped.recv_timeout(Duration::from_secs(2));
+    let outcome = ticket.try_outcome();
+    drop(resume);
+    closer.join().unwrap();
+    assert!(finished.is_ok(), "dispose waited for host profile code");
+    assert_eq!(
+        outcome,
+        Some(DeliveryOutcome::Aborted(AbortReason::Disposed))
+    );
+}
+
 #[test]
 fn blocked_dialog_and_input_ready_do_not_block_disposal_or_ticket_resolution() {
     for at in [BlockAt::Dialog, BlockAt::InputReady] {
-        let (term, events, entered, resume, _home) = spawn(at, "printf 'BLOCK HERE\\n'; exec cat");
+        let (term, events, entered, resume, _home) =
+            spawn(at, "/bin/sh", &["-c", "printf 'BLOCK HERE\\n'; exec cat"]);
         let drain = std::thread::spawn(move || for _ in events {});
         entered.recv_timeout(LAUNCH_WAIT).expect("profile entered");
         let ticket = term.send("must never be typed", SendOptions::default());
-        let (done, dropped) = bounded(1);
-        let closer = std::thread::spawn(move || {
-            drop(term);
-            let _ = done.send(());
-        });
-        let finished = dropped.recv_timeout(Duration::from_secs(2));
-        let outcome = ticket.try_outcome();
-        // Release before asserting: old code failed by holding the controller mutex.
-        drop(resume);
-        closer.join().unwrap();
+        assert_disposal(term, ticket, resume);
         drain.join().unwrap();
-        assert!(finished.is_ok(), "dispose waited for host profile code");
-        assert_eq!(
-            outcome,
-            Some(DeliveryOutcome::Aborted(AbortReason::Disposed))
-        );
     }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn a_blocked_reset_refusal_hook_does_not_hold_the_ticket_or_child_alive() {
+    let (term, events, entered, resume, _home) = spawn(
+        BlockAt::ResetRejected,
+        common::fake_agent_path(),
+        &["composer", "--refuse-next-reset"],
+    );
+    let drain = std::thread::spawn(move || for _ in events {});
+    let both = term.reset_and_send("follow-up payload", SendOptions::default());
+    entered
+        .recv_timeout(LAUNCH_WAIT)
+        .expect("refusal callback entered");
+    assert_disposal(term, both, resume);
+    drain.join().unwrap();
 }
 
 #[test]
 fn a_blocked_profile_overflow_aborts_automation_but_keeps_raw_streaming() {
     for at in [BlockAt::Dialog, BlockAt::InputReady] {
         let script = "printf 'BLOCK HERE\\n'; while [ ! -e flood ]; do sleep 0.01; done; dd if=/dev/zero bs=8192 count=2048 2>/dev/null; printf '\\nFLOOD_END\\n'; exec cat";
-        let (term, events, entered, resume, home) = spawn(at, script);
+        let (term, events, entered, resume, home) = spawn(at, "/bin/sh", &["-c", script]);
         let chunks = Arc::new(AtomicUsize::new(0));
         let flood_ended = Arc::new(AtomicBool::new(false));
         let raw_seen = Arc::new(AtomicBool::new(false));

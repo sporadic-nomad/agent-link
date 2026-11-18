@@ -4,7 +4,7 @@
 //!
 //! `agent-link-fake-agent <scene> [--sync] [--title] [--exit-on-input] [--reset-delay-ms N]
 //! [--reset-silence-ms N] [--dialog-after-ms N] [--swallow-ms N] [--keep-frame]
-//! [--hold-submit-display] [--input-log PATH]` — an
+//! [--hold-submit-display] [--refuse-next-reset] [--input-log PATH]` — an
 //! unknown scene, flag or value prints the error, the usage and the scene list, and exits 2.
 //!
 //! Screen (rows 1-based, absolute cursor moves + erase-line, any terminal size):
@@ -33,7 +33,9 @@
 //!   `agent: ok #<n>` follows 300 ms later. Typed `/new` + Enter resets instead: pending
 //!   replies, spinner and progress end at once, nothing is drawn for `--reset-silence-ms`
 //!   (default 0), then `resetting conversation`, then a fresh screen `--reset-delay-ms`
-//!   (default 200) later. Input during a reset is dropped.
+//!   (default 200) later. Input during a reset is dropped. With `--refuse-next-reset`,
+//!   the first `/new` empties the composer and appends a refusal to the same transcript.
+//!   With `--hold-submit-display` the refusal appears only once Down releases it.
 //! - Esc is read (a lone ESC never swallows the byte after it) and ignored.
 //! - `--title`: OSC 0 title `fake`, a Braille glyph + ` fake` every 100 ms while a reply is
 //!   pending. `--background-title`: a title update every 100 ms even while idle.
@@ -100,7 +102,7 @@ const USAGE: &str = concat!(
     "usage: agent-link-fake-agent <scene> [--sync] [--title] [--exit-on-input]\n",
     "       [--reset-delay-ms N] [--reset-silence-ms N] [--dialog-after-ms N]\n",
     "       [--swallow-ms N] [--keep-frame] [--hold-submit-display]\n",
-    "       [--input-log PATH]",
+    "       [--refuse-next-reset] [--input-log PATH]",
 );
 const REPLY_AFTER: Duration = Duration::from_millis(300);
 const SPINNER_EVERY: Duration = Duration::from_millis(100);
@@ -202,6 +204,7 @@ struct Opts {
     keep_frame: bool,
     reset_delay: Duration,
     reset_silence: Duration,
+    refuse_next_reset: bool,
     dialog_after: Duration,
     swallow: Duration,
     submit_display_delay: Duration,
@@ -228,6 +231,7 @@ impl Opts {
             keep_frame: false,
             reset_delay: Duration::from_millis(200),
             reset_silence: Duration::ZERO,
+            refuse_next_reset: false,
             dialog_after: Duration::from_millis(1500),
             swallow: Duration::from_millis(100),
             submit_display_delay: Duration::ZERO,
@@ -266,6 +270,10 @@ impl Opts {
                 }
                 "--hold-submit-display" => {
                     opts.hold_submit_display = true;
+                    continue;
+                }
+                "--refuse-next-reset" => {
+                    opts.refuse_next_reset = true;
                     continue;
                 }
                 "--input-log" => {
@@ -681,9 +689,15 @@ impl App {
             self.draw();
             return;
         }
-        if (self.opts.hold_submit_display || !self.opts.submit_display_delay.is_zero())
-            && text.trim() != "/new"
+        let reset = text.trim() == "/new";
+        if (!reset || self.opts.refuse_next_reset)
+            && (self.opts.hold_submit_display || !self.opts.submit_display_delay.is_zero())
         {
+            if reset {
+                // The composer clears before the diagnostic arrives.
+                self.composer.clear();
+                self.draw();
+            }
             self.delayed_submits
                 .push_back((now + self.opts.submit_display_delay, text));
             return;
@@ -694,6 +708,11 @@ impl App {
     fn show_submit(&mut self, text: String, now: Instant) {
         self.composer.clear();
         if text.trim() == "/new" {
+            if std::mem::take(&mut self.opts.refuse_next_reset) {
+                self.transcript.push(scenes::RESET_REFUSAL.into());
+                self.draw();
+                return;
+            }
             self.delayed_submits.clear();
             self.replies.clear();
             self.end_signals();

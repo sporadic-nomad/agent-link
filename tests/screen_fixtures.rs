@@ -57,6 +57,7 @@ fn progress(fields: &[(String, Val)]) -> Option<ProgressState> {
 fn recorded(events: &str) -> (Vec<TapSignal>, Vec<Vec<u8>>) {
     let mut signals = Vec::new();
     let mut replies = Vec::new();
+    let mut in_frame = false;
     for line in events.lines().filter(|l| !l.trim().is_empty()) {
         let fields = parse_line(line);
         match str_field(&fields, "kind") {
@@ -72,8 +73,16 @@ fn recorded(events: &str) -> (Vec<TapSignal>, Vec<Vec<u8>>) {
                 };
                 signals.extend(mark.map(TapSignal::Prompt));
             }
-            "frame_begin" => signals.push(TapSignal::FrameBegin),
-            "frame_end" => signals.push(TapSignal::FrameEnd),
+            // The recorder logs each DECSET/DECRST. TapSignal reports changes of mode.
+            // Codex 0.169.0 sets the mode twice on entry to its alternate screen.
+            "frame_begin" if !in_frame => {
+                in_frame = true;
+                signals.push(TapSignal::FrameBegin);
+            }
+            "frame_end" if in_frame => {
+                in_frame = false;
+                signals.push(TapSignal::FrameEnd);
+            }
             "screen_reset" => panic!("a recorded parser panic: {line}"),
             "write" if str_field(&fields, "source") == "reply" => {
                 replies.push(unescape_payload(str_field(&fields, "value")));

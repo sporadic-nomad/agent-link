@@ -9,18 +9,22 @@
 
 mod common;
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
-use agent_link::ForegroundOwner;
 use agent_link::agent::{
-    AbortReason, AgentSpec, AgentState, AgentTerminal, DeliveryOutcome, Timing,
+    AbortReason, AgentSpec, AgentState, AgentTerminal, DeliveryOutcome, Revalidate, SendOptions,
+    Timing,
 };
+use agent_link::{Event, ForegroundOwner};
 use common::agent::states_until;
 use common::delivery::{
     DELIVERY_WAIT, fake, long_window, outcome, outcome_with_states, shell, submit,
 };
-use common::fake::{QUESTION_FOOTER, READY_MARKER, answer_question, fake_profile};
-use common::{LAUNCH_WAIT, WAIT, bottom_rows, logger, screen_contains, wait_screen, wait_until};
+use common::fake::{QUESTION_FOOTER, READY_MARKER, RESET_REFUSAL, answer_question, fake_profile};
+use common::{
+    LAUNCH_WAIT, WAIT, bottom_rows, logger, screen_contains, wait_event, wait_screen, wait_until,
+};
 
 use DeliveryOutcome::{Aborted, Delivered};
 
@@ -44,6 +48,100 @@ fn a_reset_clears_the_conversation() {
     let reset = term.reset();
     assert_eq!(outcome(&term, &events, &reset), Delivered);
     fresh(&term);
+}
+
+/// Have the peer acknowledge a final byte before inspecting its raw input log. This
+/// includes any paste or extra Enter queued before the ticket was resolved.
+fn drained_input(term: &AgentTerminal, home: &Path) -> Vec<u8> {
+    term.terminal().write(b"~").unwrap();
+    screen_contains(term.terminal(), "> ~", WAIT);
+    std::fs::read(home.join("input.bin")).unwrap()
+}
+
+#[test]
+fn a_refused_reset_reports_the_reason_and_withholds_the_follow_up() {
+    for compound in [false, true] {
+        let (term, events, home) = fake(
+            "composer",
+            &["--refuse-next-reset", "--input-log", "input.bin"],
+        );
+        let seed = term.send("old conversation", submit());
+        assert_eq!(outcome(&term, &events, &seed), Delivered);
+        screen_contains(term.terminal(), "agent: ok #1", WAIT);
+        let ticket = if compound {
+            term.reset_and_send("follow-up payload", submit())
+        } else {
+            term.reset()
+        };
+        assert_eq!(
+            outcome(&term, &events, &ticket),
+            Aborted(AbortReason::ResetRejected)
+        );
+        let screen = screen_contains(term.terminal(), RESET_REFUSAL, WAIT);
+        assert!(screen.text().contains("you: old conversation"));
+        assert_eq!(
+            drained_input(&term, home.path()),
+            b"\x1b[200~old conversation\x1b[201~\r\x1b[200~/new\x1b[201~\r~"
+        );
+    }
+}
+
+#[test]
+fn an_ordinary_reset_command_is_delivered_and_its_old_notice_allows_the_next_reset() {
+    let (term, events, _home) = fake("composer", &["--refuse-next-reset"]);
+    let sent = term.send("/new", submit());
+    assert_eq!(outcome(&term, &events, &sent), Delivered);
+    screen_contains(term.terminal(), RESET_REFUSAL, WAIT);
+    let both = term.reset_and_send("new conversation", submit());
+    assert_eq!(outcome(&term, &events, &both), Delivered);
+    let screen = screen_contains(term.terminal(), "you: new conversation", WAIT);
+    assert!(!screen.text().contains(RESET_REFUSAL));
+}
+
+#[test]
+fn a_refusal_drawn_during_the_follow_up_handshake_stops_the_paste() {
+    let (term, events, home) = fake(
+        "composer",
+        &[
+            "--refuse-next-reset",
+            "--hold-submit-display",
+            "--input-log",
+            "input.bin",
+        ],
+    );
+    let both = term.reset_and_send(
+        "follow-up payload",
+        SendOptions {
+            revalidate: Revalidate::Handshake {
+                timeout: DELIVERY_WAIT,
+            },
+            ..submit()
+        },
+    );
+    wait_event(
+        term.terminal(),
+        &events,
+        DELIVERY_WAIT,
+        |event| match event {
+            Event::CommitPoint { ticket, .. } => *ticket == both.id(),
+            Event::Delivery { outcome, .. } => {
+                panic!("delivery ended before the handshake: {outcome:?}")
+            }
+            _ => false,
+        },
+    );
+    // The reset cleared the composer. Release its diagnostic while the follow-up waits.
+    term.terminal().write(b"\x1b[B").unwrap();
+    screen_contains(term.terminal(), RESET_REFUSAL, WAIT);
+    term.confirm(both.id(), true);
+    assert_eq!(
+        outcome(&term, &events, &both),
+        Aborted(AbortReason::ResetRejected)
+    );
+    assert_eq!(
+        drained_input(&term, home.path()),
+        b"\x1b[200~/new\x1b[201~\r\x1b[B~"
+    );
 }
 
 /// A bare shell (no profile) has no reset command: `Unsupported`, in its turn, with its

@@ -20,13 +20,11 @@
 //! the screen, against `OutputView::output_serial`). This includes output waiting to render
 //! behind controller publication. It comes from a backlog — for as long
 //! as a host receiver stays full, the session and its monitor stall. No wait reads quiet
-//! off such a screen. The lull and the paste wait stay bounded by their caps; submit
-//! verification has none — it waits out the stall (back-pressure by design: drain every
-//! receiver).
+//! off such a screen. Lull and paste waits have caps. Ordinary submit verification waits
+//! out the backlog. An explicit reset also has an absolute verification deadline.
 //!
-//! Fences (the paste's, [`Fence`]) are that read count, sampled right after the write was
-//! queued: a chunk read before it — the backlog from before the paste, counted late — never
-//! reads as output after it.
+//! A [`Fence`] records the read count immediately before queuing a write. A chunk
+//! already read belongs to the baseline even if the monitor counts it later.
 
 use std::time::{Duration, Instant};
 

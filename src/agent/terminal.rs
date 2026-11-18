@@ -12,8 +12,8 @@ use super::delivery::Resolver;
 use super::state::{AgentProgram, Config, Controller};
 use super::{
     AbortReason, Activity, AgentLimits, AgentProfile, DeliveryOutcome, ForegroundPolicy,
-    Permissions, Revalidate, SendOptions, ShellFallback, ShellKind, Ticket, TicketId, Timing,
-    TrustPolicy, controller, delivery, monitor,
+    Permissions, SendOptions, ShellFallback, ShellKind, Ticket, TicketId, Timing, TrustPolicy,
+    controller, delivery, monitor,
 };
 use crate::error::Result;
 use crate::{Event, SpawnMode, SpawnSpec, Terminal};
@@ -394,7 +394,9 @@ impl AgentTerminal {
     /// [`AbortReason::SubmitUnverified`](super::AbortReason::SubmitUnverified), possibly
     /// before Enter. Retries are disabled by default; opting into them can submit twice
     /// if the agent accepts input before redrawing its composer. An unverified outcome
-    /// must not be automatically resent.
+    /// must not be automatically resent. An exact reset command gets the longer reset
+    /// verification window and at most one Enter. Only [`reset`](Self::reset) and
+    /// [`reset_and_send`](Self::reset_and_send) check the agent's response for refusal.
     ///
     /// A question recognized by [`AgentProfile::question_dialog`] at the commit point
     /// stops even a paste-only send with [`AbortReason::DialogBlocking`]. A match after
@@ -487,42 +489,35 @@ impl AgentTerminal {
         })
     }
 
-    /// Starts a fresh conversation: the profile's reset command (`/clear`, `/new`) sent
-    /// exactly like [`send`](Self::send) with `submit: true` and the default options — the
-    /// same entry point, so a stopped agent is launched first, and the shell still in front
-    /// after the relaunch gets it as an inert line (`PastedUnsubmitted`). Without a profile,
-    /// or for a profile without a reset command, the ticket ends
-    /// [`AbortReason::Unsupported`](super::AbortReason::Unsupported) in its turn (after the
-    /// deliveries queued before it; nothing typed, no launch) — with its
-    /// [`Event::Delivery`].
-    /// The same question checks protect both the reset paste and its Enter.
+    /// Requests a fresh conversation with the profile's reset command. A stopped agent
+    /// is launched first. The default [`ShellFallback::PasteInert`] can leave a single
+    /// editable line on the shell without Enter. Without a reset command the ticket ends
+    /// [`AbortReason::Unsupported`] in queue order, with nothing typed or launched.
+    ///
+    /// After observing the command in the composer, the controller writes Enter once.
+    /// It checks for a fresh refusal while verifying submission and after settling fresh
+    /// output for up to [`Timing::startup_max`]. A recognized refusal yields
+    /// [`AbortReason::ResetRejected`]. An ambiguous notice or an unavailable check yields
+    /// [`AbortReason::SubmitUnverified`], including after Enter. A notice that scrolls
+    /// away between observations can be missed. `Delivered` verifies submission only.
     pub fn reset(&self) -> Ticket {
-        match self.ctl.cfg.reset_command {
-            Some(command) => self.send(
-                command,
-                SendOptions {
-                    submit: true,
-                    ..SendOptions::default()
-                },
-            ),
-            None => self.refuse(AbortReason::Unsupported),
-        }
+        let Some(command) = self.ctl.cfg.reset_command else {
+            return self.refuse(AbortReason::Unsupported);
+        };
+        self.queue(command.len(), command.len(), |ticket, resolver| {
+            let job = MessageJob::reset(ticket, command, ShellFallback::PasteInert);
+            let launch = job.refusal().is_none();
+            (Job::Message { job, resolver }, launch)
+        })
     }
 
-    /// A reset, then `text`, as **one** delivery (nothing else runs in between; one ticket,
-    /// one [`Event::Delivery`]):
-    /// 1. the reset command, submitted like [`send`](Self::send) but with
-    ///    [`ShellFallback::Fail`] (the shell still in front after the relaunch: `ShellOnly`,
-    ///    nothing typed) and never strict; not delivered ⇒ that outcome, `text` is not sent;
-    /// 2. a wait for **fresh** output after the reset's first Enter that then settles — the
-    ///    ready composer, or `startup_quiet` of quiet, capped at `startup_max` ([`Timing`]):
-    ///    silence alone never counts (a slow reset is silent at first, and the stale screen
-    ///    still shows a ready composer; a message pasted before the fresh screen would be
-    ///    lost);
-    /// 3. `text`, submitted with `Fail` on the shell and the caller's `strict` and
-    ///    `revalidate` — only the message carries the revalidation (the reset is harmless
-    ///    to send even if the message went stale meanwhile). `opts.submit` and
-    ///    `opts.on_shell` are not used.
+    /// A reset, then `text`, as **one** delivery (one ticket and one [`Event::Delivery`]).
+    /// 1. The reset follows [`reset`](Self::reset) with [`ShellFallback::Fail`] and no
+    ///    strict proof. A failed reset ends the delivery before the message is pasted.
+    /// 2. After submission, the reset checks its response across the fresh-output settle.
+    ///    The follow-up checks again at its commit point, after any host revalidation.
+    /// 3. The follow-up submits `text` with `Fail` on the shell and the caller's
+    ///    `strict` and `revalidate` settings. Only the follow-up carries revalidation.
     ///
     /// Both halves check for questions. If the reset ends with [`AbortReason::DialogBlocking`],
     /// the composite ticket reports that reason and the message is skipped.
@@ -557,30 +552,22 @@ impl AgentTerminal {
                         false,
                     );
                 }
-                let reset = MessageJob::new(
-                    ticket,
-                    command,
-                    SendOptions {
-                        submit: true,
-                        strict: false,
-                        on_shell: ShellFallback::Fail,
-                        revalidate: Revalidate::None,
-                    },
-                );
+                let reset = MessageJob::reset(ticket, command, ShellFallback::Fail);
+                let launch = reset.refusal().is_none();
                 (
                     Job::ResetAndSend {
                         reset,
                         message,
                         resolver,
                     },
-                    true,
+                    launch,
                 )
             },
         )
     }
 
     /// The host's answer to [`Event::CommitPoint`] for `ticket` (a delivery sent with
-    /// [`Revalidate::Handshake`]): `proceed` pastes, `false` ends the delivery
+    /// [`Revalidate::Handshake`](super::Revalidate::Handshake)): `proceed` pastes, `false` ends the delivery
     /// [`AbortReason::Revalidate`](super::AbortReason::Revalidate). Ignored (a `debug`
     /// line) when that delivery does not await an answer — an unknown or finished ticket,
     /// an answer after the timeout, a second answer. Never waits.
@@ -783,16 +770,22 @@ mod limit_tests {
     #[test]
     fn raw_size_refusal_precedes_sanitizing_and_launch_and_has_no_event() {
         let (term, events) = paused(AgentLimits {
-            max_message_bytes: 4,
+            max_message_bytes: 3,
             max_pending_bytes: 8,
             max_pending_jobs: 2,
         });
-        // Sanitizing this first would turn it into an empty, admissible message.
-        let ticket = term.send("\x03\x03\x03\x03\x03", SendOptions::default());
-        assert_eq!(
-            ticket.try_outcome(),
-            Some(DeliveryOutcome::Aborted(AbortReason::InputTooLarge))
-        );
+        // Sanitizing the send first would make it empty. The profile's /new command
+        // exceeds the per-message cap on its own, including as the first leg.
+        for ticket in [
+            term.send("\x03\x03\x03\x03\x03", SendOptions::default()),
+            term.reset(),
+            term.reset_and_send("x", SendOptions::default()),
+        ] {
+            assert_eq!(
+                ticket.try_outcome(),
+                Some(DeliveryOutcome::Aborted(AbortReason::InputTooLarge))
+            );
+        }
         assert_eq!(term.state(), AgentState::ShellOnly);
         assert!(term.ctl.read(|st| st.jobs.is_empty()));
         assert!(events.is_empty());

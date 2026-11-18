@@ -3,7 +3,8 @@
 //! when it exits, and the next one draws below it: read whole, that screen shows the new
 //! agent ready (or in a dialog) before its launch line is even typed. So every read of
 //! the agent's state from the screen — the startup gate's, a delivery's dialog and lull
-//! checks — takes only the rows drawn since the launch ([`Leftover::fresh`]).
+//! checks — takes only the rows drawn since the launch ([`Leftover::fresh`]). An explicit
+//! reset takes its own baseline before Enter to isolate newly drawn refusal notices.
 
 use std::sync::Arc;
 
@@ -18,6 +19,12 @@ impl Leftover {
     /// The screen `rows` (top to bottom) as the launch line is typed over them.
     pub(crate) fn new(rows: Vec<String>) -> Self {
         Self { rows: rows.into() }
+    }
+
+    /// Apply the same profile matcher to the original rows when a redraw exposes a
+    /// possible old notice in the fresh suffix.
+    pub(crate) fn text(&self) -> String {
+        self.rows.join("\n")
     }
 
     /// The part of `screen` (rows joined by `\n`) drawn since: the rows below the longest

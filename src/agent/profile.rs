@@ -346,6 +346,19 @@ pub trait AgentProfile: Send + Sync {
         detect::pending_input_default(screen, sent)
     }
 
+    /// Recognizes a visible diagnostic that the agent refused its explicit reset command.
+    /// Delivery passes the visible rows drawn since the reset's Enter. On a match it also
+    /// checks the pre-Enter screen to distinguish a newly drawn refusal from an old one.
+    /// Match the agent's diagnostic in its UI context, accounting for wrapping, quoted
+    /// replies and editable composer text. The default recognizes no refusal.
+    ///
+    /// A fresh match ends the reset with
+    /// [`AbortReason::ResetRejected`](super::AbortReason::ResetRejected).
+    /// Ordinary [`send`](super::AgentTerminal::send) calls skip this hook.
+    fn reset_rejected(&self, _fresh_screen: &str) -> bool {
+        false
+    }
+
     /// Whether a question or choice on the current screen owns keyboard input. Delivery
     /// passes only the visible rows drawn since launch. Recognize the active dialog,
     /// accounting for old prompts or quoted instructions above a redrawn composer.

@@ -17,6 +17,14 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   Profiles can match recorded layouts with `agent::detect::dialog_at_bottom`, which
   treats a bare composer prompt below the footer as the end of the question.
   The hook defaults to `false` and currently requires a custom profile.
+- `AgentProfile::reset_rejected` lets a PTY profile recognize a refusal after an
+  explicit reset. The built-in Codex profile recognizes the busy-turn `/clear`
+  diagnostic recorded with Codex CLI 0.169.0. A recognized refusal now gives
+  `Aborted(ResetRejected)` (`reset_rejected`) even if the composer cleared.
+  Both `reset()` and `reset_and_send()` check the response as fresh output settles.
+  Ambiguous or unavailable reset evidence yields `SubmitUnverified`. Either reset
+  outcome withholds the follow-up. Inspect the session before retrying an unverified
+  reset because Enter may already have reached the CLI.
 
 ## [0.2.0] — 2026-11-17
 

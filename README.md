@@ -357,15 +357,21 @@ result??;
   refused, including heuristic Windows answers under the default `ExactOnly` policy.
   A Windows host can explicitly choose `AcceptHeuristic`. Submission requires seeing
   the pasted message, followed by fresh, stable evidence that it left a readable
-  composer. Noise, silence and an unreadable composer do not prove delivery. Reset
-  commands are never retried. Ordinary Enter retries are disabled by default; opting
-  in requires pending text and can submit twice when a CLI redraws late.
+  composer. Ordinary Enter retries are disabled by default. Opting in requires
+  pending text and can submit twice when a CLI redraws late.
   A profile that recognizes an open question stops even a paste-only send with
   `DialogBlocking`. A match after the paste stops the next Enter, including an opted-in
   retry. If the shell now owns the terminal, delivery sends Ctrl-C to clear its draft
   and reports `ShellOnly`. After `DialogBlocking` or `SubmitUnverified`, inspect the
   session before sending again because input may already have reached the agent. The
   screen and foreground can change between the checks and the PTY write.
+- **Conversation resets.** `reset()` and `reset_and_send()` submit the reset command
+  at most once. If the profile recognizes a fresh refusal, the ticket reports
+  `Aborted(ResetRejected)` (`reset_rejected`) and the follow-up is withheld.
+  Ambiguous or unavailable reset evidence gives `SubmitUnverified`, even if Enter
+  already reached the agent. Inspect the session before retrying. A delivered reset
+  confirms observed submission. A host that needs proof of a new conversation must
+  obtain it separately.
 - **Input limits.** `InputLimits`, `AgentLimits` and `RpcLimits` bound pending input,
   including active writes and agent completions awaiting publication. Oversized or
   saturated input is refused without waiting on the child. Agent admission rejections

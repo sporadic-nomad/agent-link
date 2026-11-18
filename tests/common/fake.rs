@@ -25,7 +25,7 @@ use super::{WAIT, fake_agent_path, screen_contains};
 mod scenes;
 
 /// The fake agent's scenes (its binary exits 2 on any other).
-pub use scenes::SCENES as FAKE_SCENES;
+pub use scenes::{RESET_REFUSAL, SCENES as FAKE_SCENES};
 
 /// The fake's dialog header (normalised).
 pub const DIALOG_HEADER: &str = "fake trust dialog";
@@ -163,6 +163,10 @@ impl AgentProfile for FakeProfile {
 
     fn reset_command(&self) -> Option<&'static str> {
         Some("/new")
+    }
+
+    fn reset_rejected(&self, fresh_screen: &str) -> bool {
+        fresh_screen.lines().any(|row| row == RESET_REFUSAL)
     }
 
     fn signals(&self) -> SignalHints {

@@ -78,26 +78,27 @@
 //!
 //! Every wait checks for cancellation first: the terminal dropped (`Disposed`), the
 //! session ended or the monitor stopped after a panic (`NotConnected`). A host receiver
-//! left full stalls the session, and so the waits: back-pressure, no timeout (submit
-//! verification never reads a verdict off output it has not counted). Writes, logs and
+//! left full can stall the session. Verification requires counted output. Explicit reset
+//! checks expire if a current observation stays unavailable. Writes, logs and
 //! profile calls happen outside the controller's lock; the outcome goes to the ticket and,
 //! through the monitor, out as `Event::Delivery`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::delivery::Resolver;
 use super::leftover::Leftover;
 use super::settle::{self, Fence, LullParams, OutputView, Settle, interrupt_due};
-use super::state::{AgentProgram, Controller, FrontRead, Interrupt};
+use super::state::{AgentProgram, Controller, CtlState, FrontRead, Interrupt};
+use super::verify::ResetBaseline;
 use super::{
     AbortReason, AgentProfile, DeliveryOutcome, Dialog, ForegroundPolicy, Revalidate, ScreenState,
     SendOptions, ShellFallback, TicketId,
 };
 use crate::error::{Error, Result};
 use crate::pty::ProgramId;
-use crate::screen::catch_panic;
+use crate::screen::{ScreenSnapshot, catch_panic};
 use crate::{Foreground, ForegroundOwner};
 
 /// How often a delivery waiting for readiness reads the foreground while the agent could
@@ -121,9 +122,13 @@ macro_rules! trace {
 }
 pub(crate) use trace;
 
-/// Called once, right after the first Enter is queued, with the output fence sampled
-/// immediately before enqueueing (a reset-then-send waits for output after it).
-pub(crate) type OnSubmitWritten = Box<dyn FnOnce(Fence) + Send>;
+/// Only explicit resets inspect the response. A verified reset retains the evidence
+/// its follow-up needs at the commit point, including after host revalidation.
+pub(super) enum MessageIntent {
+    Send,
+    Reset,
+    SubmittedReset(ResetBaseline),
+}
 
 /// One message to deliver.
 pub(crate) struct MessageJob {
@@ -135,7 +140,7 @@ pub(crate) struct MessageJob {
     pub(crate) opts: SendOptions,
     /// The agent was relaunched once for this job already.
     pub(crate) relaunched: bool,
-    pub(crate) on_submit_written: Option<OnSubmitWritten>,
+    pub(super) intent: MessageIntent,
     /// Refused before it was queued (a reset without a reset command): ended in its turn,
     /// nothing typed.
     refused: Option<AbortReason>,
@@ -151,8 +156,23 @@ impl MessageJob {
             dropped,
             opts,
             relaunched: false,
-            on_submit_written: None,
+            intent: MessageIntent::Send,
             refused: None,
+        }
+    }
+
+    pub(super) fn reset(ticket: TicketId, command: &str, on_shell: ShellFallback) -> Self {
+        Self {
+            intent: MessageIntent::Reset,
+            ..Self::new(
+                ticket,
+                command,
+                SendOptions {
+                    submit: true,
+                    on_shell,
+                    ..SendOptions::default()
+                },
+            )
         }
     }
 
@@ -275,8 +295,8 @@ pub(crate) fn not_the_agent(agent: AgentProgram) -> &'static str {
 enum Front {
     /// The trusted foreground program is the agent: go on.
     Agent,
-    /// The shell was in front and the agent was launched again: start over.
-    Relaunched,
+    /// The agent relaunched or the startup gate rearmed. Wait for readiness again.
+    WaitForReady,
     /// The shell stayed in front: the job ends with the shell fallback's outcome.
     Shell(DeliveryOutcome),
 }
@@ -329,6 +349,14 @@ pub(crate) struct Runner {
     profile_failed: bool,
 }
 
+/// Owned rows and the controller/render revisions they were read against.
+pub(super) struct Observation {
+    pub(super) screen: ScreenSnapshot,
+    pub(super) serial: u64,
+    revision: u64,
+    pub(super) lifecycle: u64,
+}
+
 /// A profile result and the current output view at its validation boundary. `None`
 /// discards stale or unavailable evidence; `unseen` describes actual monitor backlog.
 /// Keeping these separate prevents repeated stale callbacks from extending a deadline.
@@ -365,7 +393,7 @@ impl Runner {
             Job::Message { mut job, resolver } => {
                 self.trace_start(&job, "start");
                 (
-                    self.guarded(ticket, |r| r.process_message(&mut job)),
+                    self.guarded(ticket, |r| r.process_message(&mut job, None)),
                     resolver,
                 )
             }
@@ -425,23 +453,16 @@ impl Runner {
 
     /// Port of `processAutoStartJob`: the reset, then the message, once fresh output after
     /// the reset's first Enter settled (see the module docs). The reset not delivered ⇒ its
-    /// outcome, nothing more typed. The fence is the **first** Enter's: its verification
-    /// can read the reset's redraw before it returns, so a fence taken after it would
-    /// postdate the fresh output and leave the wait to its cap; whichever Enter took, output
-    /// before the first one can never pass for fresh.
+    /// outcome, nothing more typed. The follow-up keeps the original Enter fence through
+    /// host revalidation and the last screen and foreground checks before its paste.
     pub(crate) fn process_reset_and_send(
         &mut self,
         reset: &mut MessageJob,
         message: &mut MessageJob,
     ) -> Step<DeliveryOutcome> {
         let ticket = message.ticket;
-        let first_enter: Arc<Mutex<Option<Fence>>> = Arc::default();
-        let slot = Arc::clone(&first_enter);
-        reset.on_submit_written = Some(Box::new(move |fence| {
-            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(fence);
-        }));
         self.trace_start(reset, "reset first");
-        let outcome = self.process_message(reset)?;
+        let outcome = self.process_message(reset, None)?;
         if outcome != DeliveryOutcome::Delivered {
             trace!(
                 self,
@@ -449,22 +470,19 @@ impl Runner {
             );
             return Ok(outcome);
         }
-        let fence = first_enter.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let timing = &self.ctl.cfg.timing;
-        let why = self.wait_lull(LullParams {
-            quiet: timing.startup_quiet,
-            max: timing.startup_max,
-            after: Some(fence.unwrap_or_else(|| self.fence())),
-            require_fresh: true,
-            start: Instant::now(),
-        })?;
-        trace!(self, ticket, "fresh output after the reset ({why:?})");
+        let MessageIntent::SubmittedReset(baseline) = &reset.intent else {
+            return Err(AbortReason::SubmitUnverified);
+        };
         self.trace_start(message, "then the message");
-        self.process_message(message)
+        self.process_message(message, Some(baseline))
     }
 
     /// Port of `processMessageJob` (the steps are in the module docs).
-    pub(crate) fn process_message(&mut self, job: &mut MessageJob) -> Step<DeliveryOutcome> {
+    pub(super) fn process_message(
+        &mut self,
+        job: &mut MessageJob,
+        after_reset: Option<&ResetBaseline>,
+    ) -> Step<DeliveryOutcome> {
         let ticket = job.ticket;
         self.cancelled()?;
         if let Some(reason) = job.refusal() {
@@ -486,19 +504,22 @@ impl Runner {
             // 2. Agent or shell in front.
             match self.front(job, false)? {
                 Front::Agent => {}
-                Front::Relaunched => continue,
+                Front::WaitForReady => continue,
                 Front::Shell(outcome) => return Ok(outcome),
             }
 
             // 3. Input lull.
             let start = Instant::now();
-            let why = self.wait_lull(LullParams {
-                quiet: self.ctl.cfg.timing.pre_paste_quiet,
-                max: self.ctl.cfg.timing.pre_paste_max,
-                after: None,
-                require_fresh: false,
-                start,
-            })?;
+            let why = self.wait_lull(
+                LullParams {
+                    quiet: self.ctl.cfg.timing.pre_paste_quiet,
+                    max: self.ctl.cfg.timing.pre_paste_max,
+                    after: None,
+                    require_fresh: false,
+                    start,
+                },
+                None,
+            )?;
             trace!(self, ticket, "input lull ({why:?})");
 
             // 4. Commit point.
@@ -507,41 +528,25 @@ impl Runner {
             if matches!(job.opts.revalidate, Revalidate::Handshake { .. }) {
                 // The host's answer took a round trip: output may have started meanwhile.
                 // Free when the screen stayed quiet (all output counts as fresh here).
-                let why = self.wait_lull(LullParams {
-                    quiet: self.ctl.cfg.timing.pre_paste_quiet,
-                    max: self.ctl.cfg.timing.pre_paste_max,
-                    after: None,
-                    require_fresh: false,
-                    start: Instant::now(),
-                })?;
+                let why = self.wait_lull(
+                    LullParams {
+                        quiet: self.ctl.cfg.timing.pre_paste_quiet,
+                        max: self.ctl.cfg.timing.pre_paste_max,
+                        after: None,
+                        require_fresh: false,
+                        start: Instant::now(),
+                    },
+                    None,
+                )?;
                 trace!(self, ticket, "input lull after the host's answer ({why:?})");
                 self.cancelled()?;
             }
             if job.opts.strict {
                 self.strict_check(ticket, "pre-paste readiness")?;
             }
-            if let Some(dialog) = self.dialog_on_screen()? {
-                trace!(
-                    self,
-                    ticket, "{:?} dialog on screen at the commit point", dialog.kind
-                );
-                if self.recheck_gate() {
-                    continue;
-                }
-                return Err(AbortReason::TrustPromptBlocking);
-            }
-            if self
-                .ctl
-                .read(|st| st.gate.running() && (!st.gate.ready() || st.launch_held()))
-            {
-                trace!(self, ticket, "the agent is no longer ready");
-                continue;
-            }
-            // The agent may have left during the lull: a paste must not land on the shell.
-            // For a strict send this read is the paste proof.
-            match self.front(job, true)? {
+            match self.before_paste(job, after_reset)? {
                 Front::Agent => {}
-                Front::Relaunched => continue,
+                Front::WaitForReady => continue,
                 Front::Shell(outcome) => return Ok(outcome),
             }
 
@@ -577,8 +582,49 @@ impl Runner {
         }
     }
 
+    /// At a follow-up paste, the original reset must still authorize the screen after
+    /// the final foreground proof. A stale read retries both within the same deadline,
+    /// without repeating the host's revalidation.
+    fn before_paste(
+        &mut self,
+        job: &mut MessageJob,
+        after_reset: Option<&ResetBaseline>,
+    ) -> Step<Front> {
+        let ticket = job.ticket;
+        let deadline = Instant::now() + self.ctl.cfg.timing.submit_verify_window;
+        loop {
+            let (dialog, observation) = self.dialog_on_screen(after_reset, deadline)?;
+            if let Some(dialog) = dialog {
+                trace!(
+                    self,
+                    ticket, "{:?} dialog on screen at the commit point", dialog.kind
+                );
+                if self.recheck_gate() {
+                    return Ok(Front::WaitForReady);
+                }
+                return Err(AbortReason::TrustPromptBlocking);
+            }
+            if self
+                .ctl
+                .read(|st| st.gate.running() && (!st.gate.ready() || st.launch_held()))
+            {
+                trace!(self, ticket, "the agent is no longer ready");
+                return Ok(Front::WaitForReady);
+            }
+            let front = self.front(job, true)?;
+            if after_reset.is_none()
+                || !matches!(front, Front::Agent)
+                || observation
+                    .is_some_and(|obs| self.ctl.read(|st| self.observation_current(&obs, st)))
+            {
+                return Ok(front);
+            }
+            self.retry_screen_check(deadline)?;
+        }
+    }
+
     /// Who owns the terminal now ([`owner`](Self::owner)), and what that means for `job`:
-    /// the shell in front ⇒ relaunch the agent once ([`Front::Relaunched`]: start over),
+    /// the shell in front ⇒ relaunch the agent once ([`Front::WaitForReady`]: start over),
     /// then the shell fallback ([`Front::Shell`] or `Err`); a program other than the
     /// agent's own ⇒ `ForegroundUnproven`. A strict job needs the proof on the same read
     /// (`proof::strict_owner`) — right before the paste (`paste`) also against the shell:
@@ -605,7 +651,7 @@ impl Runner {
             trace!(self, ticket, "the shell is in front: relaunching the agent");
             self.ctl.relaunch(&front);
             job.relaunched = true;
-            return Ok(Front::Relaunched);
+            return Ok(Front::WaitForReady);
         }
         self.shell_fallback(job, &front).map(Front::Shell)
     }
@@ -890,9 +936,13 @@ impl Runner {
 
     /// Waits for a lull per `params` (`settle::lull_ready`), reading the screen at each
     /// look.
-    pub(crate) fn wait_lull(&mut self, params: LullParams) -> Step<settle::Lull> {
+    pub(super) fn wait_lull(
+        &mut self,
+        params: LullParams,
+        reset: Option<&ResetBaseline>,
+    ) -> Step<settle::Lull> {
         loop {
-            let read = self.profile_read(|profile, screen, leftover| {
+            let read = self.profile_read(reset, |profile, screen, leftover| {
                 profile.classify(leftover.fresh(screen))
             })?;
             let view = if read.unseen {
@@ -933,48 +983,71 @@ impl Runner {
         }
     }
 
-    /// Evaluate a callback outside all locks. It can read the full screen and its
-    /// launch-fresh suffix from the same snapshot. Only a matching lifecycle and fully
-    /// counted, unchanged render can supply a result after the callback returns.
-    pub(crate) fn profile_read<T: Copy>(
+    pub(super) fn observation(&self) -> Option<Observation> {
+        let lifecycle = self.ctl.read(|st| st.lifecycle_revision());
+        let (screen, serial, revision) = self.ctl.term().screen_observation()?;
+        Some(Observation {
+            screen,
+            serial,
+            revision,
+            lifecycle,
+        })
+    }
+
+    pub(super) fn observation_current(&self, obs: &Observation, st: &CtlState) -> bool {
+        st.lifecycle_revision() == obs.lifecycle
+            && st.view.output_serial == obs.serial
+            && self
+                .ctl
+                .term()
+                .screen_observation_current(obs.serial, obs.revision)
+    }
+
+    /// Evaluate callbacks outside the controller lock, then validate the render and
+    /// lifecycle again. An explicit reset only admits observations after its first Enter.
+    pub(super) fn profile_read<T: Copy>(
         &mut self,
+        after_reset: Option<&ResetBaseline>,
+        call: impl FnOnce(&dyn AgentProfile, &str, &Leftover) -> T,
+    ) -> Step<ProfileRead<T>> {
+        let observation = self.observation();
+        self.read_observation(observation.as_ref(), after_reset, call)
+    }
+
+    pub(super) fn read_observation<T: Copy>(
+        &mut self,
+        observation: Option<&Observation>,
+        after_reset: Option<&ResetBaseline>,
         call: impl FnOnce(&dyn AgentProfile, &str, &Leftover) -> T,
     ) -> Step<ProfileRead<T>> {
         self.cancelled()?;
-        let lifecycle = self.ctl.read(|st| st.lifecycle_revision());
-        let observation = self.ctl.term().screen_observation();
-        let value = if let Some((screen, rendered, revision)) = &observation {
+        let value = observation.and_then(|obs| {
             let leftover = self.ctl.read(|st| {
-                (st.lifecycle_revision() == lifecycle
-                    && st.view.output_serial == *rendered
-                    && self
-                        .ctl
-                        .term()
-                        .screen_observation_current(*rendered, *revision))
+                (self.observation_current(obs, st)
+                    && after_reset.is_none_or(|reset| {
+                        reset.lifecycle == obs.lifecycle && obs.serial > reset.fence.serial
+                    }))
                 .then(|| st.leftover().clone())
-            });
-            leftover.and_then(|leftover| {
-                let text = screen.text();
-                self.profile_call(|profile| call(profile, &text, &leftover))
+            })?;
+            let text = obs.screen.text();
+            self.profile_call(|profile| {
+                if let Some(reset) = after_reset {
+                    reset.check(profile, &text)?;
+                }
+                Ok(call(profile, &text, &leftover))
             })
-        } else {
-            None
-        };
+        });
         self.ctl.read(|st| {
             if let Some(reason) = st.cancel_reason() {
                 return Err(reason);
             }
+            if after_reset.is_some_and(|reset| reset.lifecycle != st.lifecycle_revision()) {
+                return Err(AbortReason::SubmitUnverified);
+            }
             let fed = self.ctl.term().output_chunks();
-            let current = observation.as_ref().is_some_and(|(_, rendered, revision)| {
-                st.lifecycle_revision() == lifecycle
-                    && st.view.output_serial == *rendered
-                    && self
-                        .ctl
-                        .term()
-                        .screen_observation_current(*rendered, *revision)
-            });
+            let current = observation.is_some_and(|obs| self.observation_current(obs, st));
             Ok(ProfileRead {
-                value: value.filter(|_| current),
+                value: value.filter(|_| current).transpose()?,
                 view: st.view,
                 unseen: st.view.unseen(fed),
             })
@@ -983,33 +1056,45 @@ impl Runner {
 
     /// Stop on a question or return the startup dialog from this observation. Reobserve
     /// stale or unavailable results within the verification window.
-    pub(crate) fn dialog_on_screen(&mut self) -> Step<Option<Dialog>> {
+    pub(super) fn dialog_on_screen(
+        &mut self,
+        after_reset: Option<&ResetBaseline>,
+        deadline: Instant,
+    ) -> Step<(Option<Dialog>, Option<Observation>)> {
         if self.ctl.cfg.profile.is_none() {
             self.cancelled()?;
-            return Ok(None);
+            return Ok((None, None));
         }
-        let deadline = Instant::now() + self.ctl.cfg.timing.submit_verify_window;
+        loop {
+            let observation = self.observation();
+            let read = self.read_observation(
+                observation.as_ref(),
+                after_reset,
+                |profile, screen, leftover| {
+                    let fresh = leftover.fresh(screen);
+                    check_question(profile, fresh)?;
+                    Ok(profile.dialog(fresh))
+                },
+            )?;
+            if let Some(dialog) = read.value.transpose()? {
+                return Ok((dialog, observation));
+            }
+            self.retry_screen_check(deadline)?;
+        }
+    }
+
+    pub(super) fn retry_screen_check(&self, deadline: Instant) -> Step<()> {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(AbortReason::SubmitUnverified);
+        }
         let poll = self
             .ctl
             .cfg
             .timing
             .submit_verify_poll
             .max(Duration::from_millis(1));
-        loop {
-            let read = self.profile_read(|profile, screen, leftover| {
-                let fresh = leftover.fresh(screen);
-                check_question(profile, fresh)?;
-                Ok(profile.dialog(fresh))
-            })?;
-            if let Some(result) = read.value {
-                return result;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(AbortReason::SubmitUnverified);
-            }
-            self.ctl.sleep_until((now + poll).min(deadline))?;
-        }
+        self.ctl.sleep_until((now + poll).min(deadline))
     }
 
     /// Hands the current screen to the startup gate (it may un-ready and steer a dialog

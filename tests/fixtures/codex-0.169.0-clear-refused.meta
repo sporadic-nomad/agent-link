@@ -1,0 +1,8 @@
+rows=40
+cols=120
+identity=honest
+agent=codex
+version=0.169.0
+scene=clear-refused
+platform=macos-aarch64
+provider=isolated loopback Responses stub holding a turn open

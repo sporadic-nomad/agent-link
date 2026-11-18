@@ -11,7 +11,8 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use crate::agent::leftover::Leftover;
 use crate::agent::state::{AgentProgram, Config, Controller};
 use crate::agent::{
-    AgentProfile, Dialog, DialogKind, ForegroundPolicy, SendOptions, ShellKind, Timing, TrustPolicy,
+    AgentProfile, Dialog, DialogKind, ForegroundPolicy, SendOptions, ShellFallback, ShellKind,
+    Timing, TrustPolicy,
 };
 use crate::identity::TerminalIdentity;
 use crate::{Event, PtySize, SpawnSpec, Terminal};
@@ -25,6 +26,7 @@ enum Callback {
     Composer,
     Dialog,
     Question,
+    Refusal,
 }
 
 struct Blocked {
@@ -68,6 +70,12 @@ impl AgentProfile for Blocked {
         );
         question
     }
+    fn reset_rejected(&self, fresh: &str) -> bool {
+        let refused = fresh.lines().any(|row| row == "REFUSED");
+        self.block(Callback::Refusal);
+        refused
+    }
+
     fn pending_input(&self, screen: &str, sent: &str) -> Option<bool> {
         let pending = Some(screen.contains(sent));
         self.block(Callback::Composer);
@@ -187,6 +195,25 @@ impl Session {
         self.wait_screen(text, after)
     }
 
+    /// cat echoes in input order. Its later marker fences any write from the job.
+    fn assert_not_pasted(&self, payload: &str) {
+        let after = self.ctl.term().output_chunks();
+        self.term().write(b" fence").unwrap();
+        self.wait_screen(" fence", after);
+        assert!(!self.term().screen().unwrap().text().contains(payload));
+    }
+
+    /// Snapshot just before the test draws the simulated response.
+    fn reset_baseline(&self) -> ResetBaseline {
+        let runner = self.runner();
+        let obs = runner.observation().unwrap();
+        ResetBaseline {
+            rows: Leftover::new(obs.screen.rows),
+            lifecycle: obs.lifecycle,
+            fence: runner.fence(),
+        }
+    }
+
     fn runner(&self) -> Runner {
         Runner::new(self.ctl.clone())
     }
@@ -207,7 +234,7 @@ fn stale_empty_composer_cannot_become_a_stable_submit_receipt() {
     let (session, entered, resume) = Session::new(Callback::Composer, false);
     let empty_at = session.draw("> empty");
     let mut runner = session.runner();
-    let worker = std::thread::spawn(move || runner.wait_submit_outcome("pending", 0));
+    let worker = std::thread::spawn(move || runner.wait_submit_outcome("pending", 0, None));
     entered.recv_timeout(WAIT).unwrap();
     let restored_at = session.draw("> pending");
     assert!(
@@ -302,7 +329,9 @@ fn a_question_after_enter_can_accompany_a_verified_submit() {
     let enter_fence = session.ctl.term().output_chunks();
     session.draw("QUESTION\n> empty");
     assert_eq!(
-        session.runner().wait_submit_outcome("pending", enter_fence),
+        session
+            .runner()
+            .wait_submit_outcome("pending", enter_fence, None),
         Ok(Submit::Submitted)
     );
     assert!(entered.is_empty(), "reading the receipt needs no input");
@@ -339,7 +368,7 @@ fn a_panicking_question_predicate_cannot_authorize_a_paste() {
     let mut runner = session.runner();
     let worker = std::thread::spawn(move || {
         let mut job = MessageJob::new(TicketId(1), "must stay unsent", SendOptions::default());
-        runner.process_message(&mut job)
+        runner.process_message(&mut job, None)
     });
     entered
         .recv_timeout(WAIT)
@@ -348,18 +377,7 @@ fn a_panicking_question_predicate_cannot_authorize_a_paste() {
     drop(resume);
     assert_eq!(worker.join().unwrap(), Err(AbortReason::SubmitUnverified));
 
-    // cat echoes writes in order. Seeing this later input fences any attempted paste.
-    let after = session.ctl.term().output_chunks();
-    session.term().write(b" fence").unwrap();
-    session.wait_screen(" fence", after);
-    assert!(
-        !session
-            .term()
-            .screen()
-            .unwrap()
-            .text()
-            .contains("must stay unsent")
-    );
+    session.assert_not_pasted("must stay unsent");
 }
 
 #[test]
@@ -367,7 +385,7 @@ fn cancellation_is_rechecked_after_a_composer_callback() {
     let (session, entered, resume) = Session::new(Callback::Composer, false);
     session.draw("> empty");
     let mut runner = session.runner();
-    let worker = std::thread::spawn(move || runner.wait_submit_outcome("pending", 0));
+    let worker = std::thread::spawn(move || runner.wait_submit_outcome("pending", 0, None));
     entered.recv_timeout(WAIT).unwrap();
     session.ctl.dispose();
     drop(resume);
@@ -377,15 +395,16 @@ fn cancellation_is_rechecked_after_a_composer_callback() {
 fn during_repeated_redraws<T: Send + 'static>(
     callback: Callback,
     text: &str,
-    check: impl FnOnce(&mut Runner) -> T + Send + 'static,
-) -> T {
+    check: impl FnOnce(&mut Runner, ResetBaseline) -> T + Send + 'static,
+) -> (Session, T) {
     let (session, entered, resume) = Session::new(callback, true);
+    let baseline = session.reset_baseline();
     session.draw(text);
     let mut runner = session.runner();
     let (done, result) = bounded(1);
     let started = Instant::now();
     let worker = std::thread::spawn(move || {
-        let _ = done.send(check(&mut runner));
+        let _ = done.send(check(&mut runner, baseline));
     });
     let timeout = crossbeam_channel::after(WAIT);
     let mut changes = 0;
@@ -407,24 +426,107 @@ fn during_repeated_redraws<T: Send + 'static>(
         started.elapsed() >= WINDOW,
         "gave up before the submit window expired"
     );
-    outcome
+    (session, outcome)
 }
 
 #[test]
 fn continuously_stale_callbacks_do_not_extend_verification_forever() {
-    let outcome = during_repeated_redraws(Callback::Composer, "> empty", |runner| {
-        runner.wait_submit_outcome("pending", 0)
+    let (_, outcome) = during_repeated_redraws(Callback::Composer, "> empty", |runner, _| {
+        runner.wait_submit_outcome("pending", 0, None)
     });
     assert_eq!(outcome, Ok(Submit::Unverified));
 }
 
 #[test]
 fn continuously_stale_question_checks_expire_even_when_the_paste_is_visible() {
-    let outcome = during_repeated_redraws(Callback::Question, "> pending", |runner| {
+    let (_, outcome) = during_repeated_redraws(Callback::Question, "> pending", |runner, _| {
         let job = MessageJob::new(TicketId(1), "pending", SendOptions::default());
         runner.wait_visible_paste(&job, 0)
     });
     assert_eq!(outcome, Err(AbortReason::SubmitUnverified));
+}
+
+#[test]
+fn a_reset_rechecks_its_pre_enter_guards_after_a_redraw() {
+    let (session, entered, resume) = Session::new(Callback::Composer, false);
+    session.draw("> /new");
+    let mut runner = session.runner();
+    let worker = std::thread::spawn(move || {
+        let job = MessageJob::reset(TicketId(1), "/new", ShellFallback::Fail);
+        runner.write_reset_enter(&job, 0).map(|_| ())
+    });
+    entered.recv_timeout(WAIT).expect("visible paste checked");
+    session.draw("QUESTION\n> /new");
+    drop(resume);
+    assert_eq!(worker.join().unwrap(), Err(AbortReason::DialogBlocking));
+}
+
+#[test]
+fn a_fresh_refusal_can_end_verification_while_the_command_is_still_in_the_composer() {
+    let (session, _, resume) = Session::new(Callback::Refusal, false);
+    drop(resume);
+    session.draw("> /new");
+    let baseline = session.reset_baseline();
+    session.draw("REFUSED\n> /new");
+    assert_eq!(
+        session
+            .runner()
+            .wait_submit_outcome("/new", baseline.fence.serial, Some(&baseline)),
+        Err(AbortReason::ResetRejected),
+    );
+}
+
+#[test]
+fn a_redraw_or_relaunch_invalidates_the_reset_refusal_verdict() {
+    for relaunch in [false, true] {
+        let (session, entered, resume) = Session::new(Callback::Refusal, false);
+        session.draw("> /new");
+        let baseline = session.reset_baseline();
+        session.draw("REFUSED\n> empty");
+        let mut runner = session.runner();
+        let worker = std::thread::spawn(move || {
+            runner.wait_submit_outcome("/new", baseline.fence.serial, Some(&baseline))
+        });
+        entered
+            .recv_timeout(WAIT)
+            .expect("refusal callback entered");
+        let expected = if relaunch {
+            session.ctl.update_quietly(|st, now| st.launch(now));
+            Err(AbortReason::SubmitUnverified)
+        } else {
+            session.draw("> empty");
+            Ok(Submit::Submitted)
+        };
+        drop(resume);
+        assert_eq!(worker.join().unwrap(), expected);
+    }
+}
+
+#[test]
+fn a_header_redraw_exposing_an_old_refusal_is_ambiguous() {
+    let (session, _, resume) = Session::new(Callback::Refusal, false);
+    drop(resume);
+    session.draw("old header\nREFUSED\n> /new");
+    let baseline = session.reset_baseline();
+    session.draw("changed header\nREFUSED\n> empty");
+    assert_eq!(
+        session
+            .runner()
+            .wait_submit_outcome("/new", baseline.fence.serial, Some(&baseline)),
+        Err(AbortReason::SubmitUnverified),
+    );
+}
+
+#[test]
+fn a_follow_up_with_continuously_stale_refusal_checks_expires_before_paste() {
+    let (session, outcome) =
+        during_repeated_redraws(Callback::Refusal, "> ready", |runner, baseline| {
+            assert!(runner.ctl.evaluate_gate(false));
+            let mut job = MessageJob::new(TicketId(1), "must stay unsent", SendOptions::default());
+            runner.process_message(&mut job, Some(&baseline))
+        });
+    assert_eq!(outcome, Err(AbortReason::SubmitUnverified));
+    session.assert_not_pasted("must stay unsent");
 }
 
 #[test]
@@ -446,7 +548,9 @@ fn profile_observations_survive_gate_polling_but_not_resize_or_relaunch() {
         session.draw("> empty");
         let mut runner = session.runner();
         let worker = std::thread::spawn(move || {
-            runner.profile_read(|profile, screen, _| profile.pending_input(screen, "pending"))
+            runner.profile_read(None, |profile, screen, _| {
+                profile.pending_input(screen, "pending")
+            })
         });
         entered.recv_timeout(WAIT).unwrap();
         match change {

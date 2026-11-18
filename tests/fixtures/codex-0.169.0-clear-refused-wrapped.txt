@@ -1,0 +1,40 @@
+
+  >_ OpenAI Codex (v0.169.0)
+     /private/tmp/reset-jw1iz6ya/scene
+
+
+› Wait for a reply
+
+
+■ '/clear' is disabled while a task is
+in progress.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+• Working (2s • esc to interrupt)
+
+
+› Ask Codex to do anything
+
+  gpt-5 default · /private/tmp/reset-
+  jw1iz6ya/scene
+  ← for agents ⚠ 1 warning · f2 to view

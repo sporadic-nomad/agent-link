@@ -27,14 +27,36 @@
 
 use std::time::Instant;
 
-use super::controller::{MessageJob, Owner, Runner, Step, check_question, not_the_agent, trace};
-use super::settle::{Settle, Submit, SubmitCheck, VerifyTiming};
-use super::{AbortReason, TicketId};
+use super::controller::{
+    MessageIntent, MessageJob, Owner, Runner, Step, check_question, not_the_agent, trace,
+};
+use super::leftover::Leftover;
+use super::settle::{Fence, LullParams, Settle, Submit, SubmitCheck, VerifyTiming};
+use super::{AbortReason, AgentProfile, TicketId};
+
+/// The screen and agent that received the explicit reset's single Enter.
+pub(super) struct ResetBaseline {
+    rows: Leftover,
+    pub(super) lifecycle: u64,
+    pub(super) fence: Fence,
+}
+
+impl ResetBaseline {
+    pub(super) fn check(&self, profile: &dyn AgentProfile, screen: &str) -> Step<()> {
+        if profile.reset_rejected(self.rows.fresh(screen)) {
+            // A header redraw or reflow can expose an old notice in the suffix.
+            if profile.reset_rejected(&self.rows.text()) {
+                return Err(AbortReason::SubmitUnverified);
+            }
+            return Err(AbortReason::ResetRejected);
+        }
+        Ok(())
+    }
+}
 
 impl Runner {
-    /// Writes the Enter and verifies it took (see the module docs); `paste_fence` is the
-    /// paste's fence. `on_submit_written` runs once, right after the first Enter was
-    /// written.
+    /// Write a separate Enter and verify it. An explicit reset keeps its first-Enter
+    /// evidence through verification, settling and any follow-up commit point.
     pub(crate) fn submit_with_verification(
         &mut self,
         job: &mut MessageJob,
@@ -43,27 +65,31 @@ impl Runner {
         let ticket = job.ticket;
         // A reset can keep its old composer while it is already executing. Repeating
         // it could clear the new conversation, so a reset is never retried.
+        if matches!(job.intent, MessageIntent::Reset) {
+            let reset = self.write_reset_enter(job, paste_fence)?;
+            let verdict = self.wait_submit_outcome(&job.text, reset.fence.serial, Some(&reset))?;
+            if verdict != Submit::Submitted {
+                return Err(AbortReason::SubmitUnverified);
+            }
+            self.settle_reset(ticket, &reset)?;
+            job.intent = MessageIntent::SubmittedReset(reset);
+            return Ok(());
+        }
         let retries = if self.ctl.cfg.reset_command == Some(job.text.as_str()) {
             0
         } else {
             self.ctl.cfg.timing.submit_retry_max
         };
-        // A dialog drawn while the paste settled would take the Enter (claude's trust
-        // dialog defaults to "No, exit").
         self.no_dialog_before_enter(ticket)?;
         self.wait_visible_paste(job, paste_fence)?;
         self.no_dialog_before_enter(ticket)?;
         self.agent_before_enter(ticket, job.opts.strict.then_some("initial submit"))?;
-        let first_enter = self.fence();
-        let mut enter_fence = first_enter.serial;
+        let mut enter_fence = self.fence().serial;
         self.write(b"\r")?;
-        if let Some(on_submit_written) = job.on_submit_written.take() {
-            on_submit_written(first_enter);
-        }
         self.cancelled()?;
         let mut attempt = 0;
         loop {
-            let verdict = self.wait_submit_outcome(&job.text, enter_fence)?;
+            let verdict = self.wait_submit_outcome(&job.text, enter_fence, None)?;
             if job.opts.strict {
                 self.strict_check(ticket, "submit verification")?;
             }
@@ -101,36 +127,96 @@ impl Runner {
         }
     }
 
+    /// Use the same owned rows for the visible-paste and dialog checks and for the
+    /// reset baseline. Revalidate after the foreground read, immediately before queuing
+    /// Enter. The screen observation and write are still separate operations.
+    fn write_reset_enter(&mut self, job: &MessageJob, paste_fence: u64) -> Step<ResetBaseline> {
+        let deadline = Instant::now() + self.ctl.cfg.timing.submit_verify_window;
+        loop {
+            let observation = self.observation();
+            let read =
+                self.read_observation(observation.as_ref(), None, |profile, screen, launch| {
+                    let fresh = launch.fresh(screen);
+                    check_question(profile, fresh)?;
+                    let dialog = profile.dialog(fresh);
+                    let visible =
+                        dialog.is_none() && profile.pending_input(screen, &job.text) == Some(true);
+                    Ok((dialog, visible))
+                })?;
+            let guard = read.value.transpose()?;
+            if matches!(guard, Some((Some(_), _))) {
+                self.recheck_gate();
+                return Err(AbortReason::TrustPromptBlocking);
+            }
+            self.agent_before_enter(job.ticket, None)?;
+            if let (Some((None, true)), Some(obs)) = (guard, observation) {
+                let fence = self.fence();
+                if fence.serial > paste_fence
+                    && fence.serial == obs.serial
+                    && self.ctl.read(|st| self.observation_current(&obs, st))
+                {
+                    self.write(b"\r")?;
+                    return Ok(ResetBaseline {
+                        rows: Leftover::new(obs.screen.rows),
+                        lifecycle: obs.lifecycle,
+                        fence,
+                    });
+                }
+            }
+            self.retry_screen_check(deadline)?;
+        }
+    }
+
+    fn settle_reset(&mut self, ticket: TicketId, reset: &ResetBaseline) -> Step<()> {
+        // The receipt just checked the refusal and the composer on one observation.
+        let timing = &self.ctl.cfg.timing;
+        let why = self.wait_lull(
+            LullParams {
+                quiet: timing.startup_quiet,
+                max: timing.startup_max,
+                after: Some(reset.fence),
+                require_fresh: true,
+                start: Instant::now(),
+            },
+            Some(reset),
+        )?;
+        trace!(self, ticket, "fresh output after the reset ({why:?})");
+        let deadline = Instant::now() + self.ctl.cfg.timing.submit_verify_window;
+        loop {
+            if self
+                .profile_read(Some(reset), |_, _, _| ())?
+                .value
+                .is_some()
+            {
+                return Ok(());
+            }
+            self.retry_screen_check(deadline)?;
+        }
+    }
+
     /// Do not submit an unobserved paste: unrelated output over an unchanged empty
     /// composer otherwise looks like a receipt. Wait a bounded interval for the monitor
     /// to catch up and the profile to recognise this message before the first Enter.
     fn wait_visible_paste(&mut self, job: &MessageJob, paste_fence: u64) -> Step<()> {
-        let timing = &self.ctl.cfg.timing;
-        let deadline = Instant::now() + timing.submit_verify_window;
-        let poll = timing
-            .submit_verify_poll
-            .max(std::time::Duration::from_millis(1));
+        let deadline = Instant::now() + self.ctl.cfg.timing.submit_verify_window;
         loop {
             self.cancelled()?;
             self.agent_before_enter(job.ticket, job.opts.strict.then_some("paste verification"))?;
-            let read = self.profile_read(|profile, screen, leftover| {
+            let read = self.profile_read(None, |profile, screen, leftover| {
                 check_question(profile, leftover.fresh(screen))?;
                 Ok(profile.pending_input(screen, &job.text) == Some(true))
             })?;
             if read.value.transpose()? == Some(true) && read.view.output_serial > paste_fence {
                 return Ok(());
             }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(AbortReason::SubmitUnverified);
-            }
-            self.ctl.sleep_until((now + poll).min(deadline))?;
+            self.retry_screen_check(deadline)?;
         }
     }
 
     /// Stop before Enter on a recognized question. Only a startup dialog rechecks the gate.
     fn no_dialog_before_enter(&mut self, ticket: TicketId) -> Step<()> {
-        let Some(dialog) = self.dialog_on_screen()? else {
+        let deadline = Instant::now() + self.ctl.cfg.timing.submit_verify_window;
+        let (Some(dialog), _) = self.dialog_on_screen(None, deadline)? else {
             return Ok(());
         };
         trace!(
@@ -209,32 +295,39 @@ impl Runner {
     }
 
     /// One Enter's verdict (`settle::SubmitCheck`), polling the screen.
-    fn wait_submit_outcome(&mut self, text: &str, enter_fence: u64) -> Step<Submit> {
+    fn wait_submit_outcome(
+        &mut self,
+        text: &str,
+        enter_fence: u64,
+        reset: Option<&ResetBaseline>,
+    ) -> Step<Submit> {
         let timing = &self.ctl.cfg.timing;
         let verify = VerifyTiming {
             quiet: timing.submit_verify_quiet,
             // Reset commands may execute silently before drawing a new composer. A
             // stale composer is neither a receipt nor permission to repeat the reset.
-            window: if self.ctl.cfg.reset_command == Some(text) {
+            window: if reset.is_some() || self.ctl.cfg.reset_command == Some(text) {
                 timing.startup_max.max(timing.submit_verify_window)
             } else {
                 timing.submit_verify_window
             },
             poll: timing.submit_verify_poll,
         };
-        let mut check = SubmitCheck::new(Instant::now(), enter_fence);
+        let start = Instant::now();
+        let deadline = start + verify.window;
+        let mut check = SubmitCheck::new(start, enter_fence);
         loop {
             self.cancelled()?;
-            let read =
-                self.profile_read(|profile, screen, _| profile.pending_input(screen, text))?;
-            match check.poll(
-                &read.view,
-                read.value.flatten(),
-                read.unseen,
-                Instant::now(),
-                &verify,
-            ) {
+            let read = self.profile_read(reset, |profile, screen, _| {
+                profile.pending_input(screen, text)
+            })?;
+            let now = Instant::now();
+            match check.poll(&read.view, read.value.flatten(), read.unseen, now, &verify) {
                 Settle::Done(outcome) => return Ok(outcome),
+                Settle::Wait(_) if reset.is_some() && now >= deadline => {
+                    return Ok(Submit::Unverified);
+                }
+                Settle::Wait(at) if reset.is_some() => self.ctl.sleep_until(at.min(deadline))?,
                 Settle::Wait(at) => self.ctl.sleep_until(at)?,
             }
         }

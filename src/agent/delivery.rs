@@ -72,6 +72,9 @@ pub enum AbortReason {
     /// this outcome requires a fresh foreground read naming the agent. Inspect the
     /// session before sending again.
     DialogBlocking,
+    /// The profile recognized a fresh diagnostic refusing an explicit reset after Enter.
+    /// A compound reset ends before the follow-up paste.
+    ResetRejected,
     /// The commit-point check ([`SendOptions::revalidate`]) said no, or its handshake was
     /// not answered in time.
     Revalidate,
@@ -79,6 +82,8 @@ pub enum AbortReason {
     /// evidence could not confirm submission: the paste was not observed, the
     /// composer remained unchanged, or the profile could not read it reliably. No Enter
     /// is written before observing the paste; afterward the default writes it once.
+    /// An explicit reset also ends here when a current refusal check is unavailable
+    /// or a visible notice could predate its Enter. Its follow-up is withheld.
     /// Explicitly configured retries can write more. The agent may already have accepted
     /// the message or may accept it later: do not automatically resend this outcome.
     SubmitUnverified,
@@ -113,6 +118,7 @@ impl AbortReason {
             Self::ShellOnly => "shell_only",
             Self::ForegroundUnproven => "foreground_unproven",
             Self::TrustPromptBlocking => "trust_prompt_blocking",
+            Self::ResetRejected => "reset_rejected",
             Self::DialogBlocking => "dialog_blocking",
             Self::Revalidate => "revalidate",
             Self::SubmitUnverified => "submit_unverified",
@@ -403,6 +409,7 @@ mod tests {
 
     #[test]
     fn reasons_have_snake_case_names() {
+        assert_eq!(AbortReason::ResetRejected.as_str(), "reset_rejected");
         assert_eq!(AbortReason::DialogBlocking.as_str(), "dialog_blocking");
         assert_eq!(
             AbortReason::TrustPromptBlocking.as_str(),

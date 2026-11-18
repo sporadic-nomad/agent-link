@@ -131,8 +131,9 @@ Possible `DeliveryOutcome` values:
 | `ForegroundUnproven` (`"foreground_unproven"`) | Another program owns the terminal, or foreground confidence is rejected by `ForegroundPolicy` (e.g. Windows heuristic under `ExactOnly`). |
 | `TrustPromptBlocking` (`"trust_prompt_blocking"`) | A startup/trust dialog was on screen where the message or verification would go. |
 | `DialogBlocking` (`"dialog_blocking"`) | The profile recognized an active question before the paste or a subsequent Enter. Inspect the session before sending again. |
+| `ResetRejected` (`"reset_rejected"`) | After an explicit reset's Enter, the profile recognized a fresh refusal from the agent. A queued follow-up in the same job is withheld. |
 | `Revalidate` (`"revalidate"`) | `Revalidate::Sync` returned `false`/panicked, or `Revalidate::Handshake` received `false`/timed out. |
-| `SubmitUnverified` (`"submit_unverified"`) | A current dialog check was unavailable, the paste was not seen, or the composer was unchanged or unreadable after Enter. **Do NOT auto-resend.** |
+| `SubmitUnverified` (`"submit_unverified"`) | Delivery could not verify the pasted text or its submission, obtain a current dialog check, or distinguish fresh reset evidence. Enter may already have reached the agent. **Do not auto-resend.** |
 | `Disposed` (`"disposed"`) | `AgentTerminal` was dropped before completion. |
 | `WriteFailed` (`"write_failed"`) | Underlying PTY write failed. |
 | `Unsupported` (`"unsupported"`) | `reset()` / `reset_and_send()` called without a profile or on a profile with `reset_command() == None`. |
@@ -146,16 +147,31 @@ Possible `DeliveryOutcome` values:
 
 ## Conversation Resets (`reset` & `reset_and_send`)
 
-- `term.reset() -> Ticket` sends the profile's `reset_command()` (`"/clear"` for `claude` and `codex`, `"/new"` for `pi`, `opencode` and `cursor`) with `submit: true` and the default `ShellFallback::PasteInert`.
-- `term.reset_and_send(text, opts) -> Ticket` executes a reset followed by `text` as one serialized job with one ticket.
-  1. Reserves `text.len() + cmd.len()` bytes (using 1 job slot).
-  2. Sends `reset_command` (`strict: false`, `on_shell: Fail`, `revalidate: None`). If reset fails, `text` is not sent.
-  3. Waits for fresh output after reset's Enter and settles until ready or `startup_quiet` (capped at `startup_max`).
-  4. Sends `text` with `submit: true`, `on_shell: Fail`, and your `opts.strict` / `opts.revalidate`.
+- `reset()` submits the profile's reset command (`/clear` for Claude and Codex, `/new` for Pi, OpenCode and Cursor). Its default `ShellFallback::PasteInert` can leave a single-line command on the shell input line without Enter and return `PastedUnsubmitted`.
+- `reset_and_send(text, opts)` reserves one queue slot and `text.len() + cmd.len()` bytes for one ticket. Both steps use `ShellFallback::Fail` and check for blocking questions. The reset uses `strict: false` and `Revalidate::None`. Only a delivered reset permits the follow-up, which uses `submit: true` and the caller's `strict` and `revalidate` settings.
 
-Both halves check for questions. If the reset ends with `DialogBlocking`, the composite
-ticket carries that reason and the follow-up message is skipped. Reset commands are
-never retried automatically.
+During submit verification, both reset methods compare the screen with the rows
+visible just before Enter. If the profile recognizes a fresh refusal, the ticket and
+delivery event report `Aborted(ResetRejected)`, even if the composer cleared.
+After verifying submission, both methods also check the response as fresh output
+settles (`startup_quiet`, capped at `startup_max`). The compound job checks again
+before pasting the follow-up, including after a host handshake.
+
+The built-in Codex profile recognizes the busy-turn `/clear` diagnostic recorded
+with Codex CLI 0.169.0. See the [120-column capture](../tests/fixtures/codex-0.169.0-clear-refused.txt)
+and the [40-column capture](../tests/fixtures/codex-0.169.0-clear-refused-wrapped.txt).
+
+If a redraw makes a refusal indistinguishable from one already on screen, or a
+current observation remains unavailable, the ticket reports `SubmitUnverified`.
+Either abort withholds the follow-up. Enter may already have reached the agent, so
+inspect the session before retrying. A refusal can scroll away between observations.
+`Delivered` confirms observed submission. Verifying that a new conversation exists
+requires separate evidence.
+
+Both reset methods use at most one Enter for the reset command and allow at least
+`startup_max` for submit verification. An ordinary `send` that exactly matches the
+configured reset command uses the same Enter limit and verification window. It still
+reports ordinary message outcomes.
 
 ---
 
@@ -237,6 +253,7 @@ Implement `agent::AgentProfile` (`Send + Sync`) to support another CLI or custom
   - `launch(&self, perms, trust, cwd, shell) -> LaunchPlan`
   - `pending_input(&self, screen, sent) -> Option<bool>` — defaults to `detect::pending_input_default(screen, sent)` (`Some(true)` = still in composer, `Some(false)` = submitted/cleared, `None` = unreadable).
   - `reset_command(&self) -> Option<&'static str>`
+  - `reset_rejected(&self, fresh_screen: &str) -> bool` — defaults to `false`. Match a complete refusal in its recorded CLI layout. The controller also runs the matcher against the pre-Enter rows to distinguish an old notice exposed by a redraw.
   - `signals(&self) -> SignalHints`
   - `login_check(&self) -> Option<LoginCheck>`
   - `rpc_launch_with_options(&self, options: &RpcLaunchOptions) -> Result<RpcLaunch>`

@@ -616,7 +616,7 @@ fn a_bad_scene_or_flag_exits_2_with_usage() {
                 "usage: agent-link-fake-agent <scene> [--sync] [--title] [--exit-on-input]",
                 "       [--reset-delay-ms N] [--reset-silence-ms N] [--dialog-after-ms N]",
                 "       [--swallow-ms N] [--keep-frame] [--hold-submit-display]",
-                "       [--input-log PATH]",
+                "       [--refuse-next-reset] [--input-log PATH]",
                 &scenes,
             ],
             "{args:?}"

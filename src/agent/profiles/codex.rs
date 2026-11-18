@@ -169,6 +169,20 @@ impl AgentProfile for CodexProfile {
                     source: "tests/fixtures/codex-0.154.0-ready.bin",
                 },
                 Evidence {
+                    operation: "busy-turn /clear refusal",
+                    kind: EvidenceKind::CapturedTerminal,
+                    cli_version: Some("0.169.0"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/codex-0.169.0-clear-refused.bin",
+                },
+                Evidence {
+                    operation: "busy-turn /clear refusal (wrapped)",
+                    kind: EvidenceKind::CapturedTerminal,
+                    cli_version: Some("0.169.0"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/codex-0.169.0-clear-refused-wrapped.bin",
+                },
+                Evidence {
                     operation: "unattended app-server launch config/read",
                     kind: EvidenceKind::LiveCheck,
                     cli_version: Some("0.169.0"),
@@ -238,6 +252,17 @@ impl AgentProfile for CodexProfile {
 
     fn reset_command(&self) -> Option<&'static str> {
         Some("/clear")
+    }
+
+    // Codex 0.169.0 draws the error at column zero. It word-wraps onto adjacent
+    // unindented rows. Assistant and composer continuations both carry indentation.
+    fn reset_rejected(&self, fresh_screen: &str) -> bool {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        cached(
+            &RE,
+            r"(?m)^■ '/clear'[ \n]is[ \n]disabled[ \n]while[ \n]a[ \n]task[ \n]is[ \n]in[ \n]progress\.$",
+        )
+        .is_match(fresh_screen)
     }
 
     /// verified: codex 0.154.0 — Braille title spinner (`⠋⠙⠹…` + the cwd's name) while

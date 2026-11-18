@@ -209,6 +209,36 @@ fn the_codex_update_prompt_is_steered_to_skip_never_update_now() {
 }
 
 #[test]
+fn codex_matches_its_busy_turn_clear_error_including_the_wrapped_capture() {
+    let p = profile("codex");
+    for scene in ["clear-refused", "clear-refused-wrapped"] {
+        let screen = fixtures::find("codex", scene).screen();
+        assert!(p.reset_rejected(&screen), "{scene}");
+        assert_eq!(p.pending_input(&screen, "/clear"), Some(false), "{scene}");
+    }
+    assert!(!p.reset_rejected(&fixtures::find("codex", "clear").screen()));
+}
+
+#[test]
+fn codex_ignores_quotations_drafts_and_incomplete_clear_errors() {
+    let p = profile("codex");
+    let notice = "■ '/clear' is disabled while a task is in progress.";
+    for screen in [
+        format!("• {notice}"),
+        format!("• Here is a quote:\n\n  {notice}\n\n  Done."),
+        format!("› {notice}"),
+        format!("› An example\n\n  {notice}\n  Another line"),
+        format!("{notice} Continued text."),
+        "'/clear' is disabled while a task is in progress.".into(),
+        "■ '/clear' is disabled while a task is\n\nin progress.".into(),
+        "■ '/clear' is disabled while a task is\n• Working\nin progress.".into(),
+        "■ '/clear' is disabled while a task is\n  in progress.".into(),
+    ] {
+        assert!(!p.reset_rejected(&screen), "{screen}");
+    }
+}
+
+#[test]
 fn a_codex_dialog_wins_over_ready_text_on_the_same_screen() {
     let p = profile("codex");
     let ready = fixtures::find("codex", "ready").screen();
