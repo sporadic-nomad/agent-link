@@ -19,7 +19,7 @@ use regex::Regex;
 use crate::agent::detect::{has_all, has_any, selected_option};
 use crate::agent::launch::toml_basic_string;
 use crate::agent::{
-    AgentProfile, Dialog, DialogKind, LaunchPlan, LoginCheck, Permissions, RpcLaunch,
+    AgentProfile, Dialog, DialogKind, LaunchPlan, LoginCheck, ModelChoice, Permissions, RpcLaunch,
     RpcLaunchOptions, ShellKind, SignalHints, TrustKey, TrustPolicy, Unlock,
 };
 use crate::screen::{cached, normalize};
@@ -189,6 +189,10 @@ impl AgentProfile for CodexProfile {
                     platform: Some("macos-aarch64"),
                     source: "docs/permission-validation.md",
                 },
+                Evidence {
+                    cli_version: Some("0.170.0"),
+                    ..super::MODEL_ARGV_EVIDENCE
+                },
             ],
         }
     }
@@ -248,6 +252,59 @@ impl AgentProfile for CodexProfile {
             }
         }
         plan
+    }
+
+    fn model_args(&self, choice: &ModelChoice, base_args: &[String]) -> crate::Result<Vec<String>> {
+        // Built-in ReasoningEffort spellings at rust-v0.170.0. Every label here
+        // is a bare word that Codex's TOML override parser reads as a string.
+        let effort = super::requested_effort(
+            self.id(),
+            choice,
+            &[
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra",
+                "persistent",
+            ],
+        )?;
+        let mut base = base_args.iter().map(String::as_str);
+        while let Some(word) = base.next() {
+            if word.starts_with("-m") || word == "--model" || word.starts_with("--model=") {
+                return Err(crate::Error::InvalidInput(
+                    "codex launch already supplies a model".into(),
+                ));
+            }
+            // Clap accepts split, attached short, and equals forms. Codex splits
+            // an override at the first equals sign and trims the key.
+            let assignment = match word {
+                "-c" | "--config" => Some(base.next().ok_or_else(|| {
+                    crate::Error::InvalidInput("codex launch needs a config override value".into())
+                })?),
+                _ => word
+                    .strip_prefix("--config=")
+                    .or_else(|| word.strip_prefix("-c="))
+                    .or_else(|| word.strip_prefix("-c")),
+            };
+            if let Some((key, _)) = assignment.and_then(|value| value.split_once('=')) {
+                let key = key.trim();
+                if key == "model" || (effort.is_some() && key == "model_reasoning_effort") {
+                    return Err(crate::Error::InvalidInput(format!(
+                        "codex launch already configures {key}"
+                    )));
+                }
+            }
+        }
+
+        let mut args = vec!["-m".into(), choice.model.clone()];
+        if let Some(level) = effort {
+            args.extend(["-c".into(), format!("model_reasoning_effort={level}")]);
+        }
+        Ok(args)
     }
 
     fn reset_command(&self) -> Option<&'static str> {

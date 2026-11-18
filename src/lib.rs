@@ -192,7 +192,7 @@ extern crate self as agent_link;
 //   agent/activity.rs        Activity, ActivityTracker
 //   agent/timing.rs          Timing defaults
 //   agent/permissions.rs     Permissions, PreTrust, TrustPolicy, ForegroundPolicy
-//   agent/launch.rs          LaunchPlan, ShellKind, one-shot login-shell command lines
+//   agent/launch.rs          LaunchPlan, ModelChoice, ShellKind, one-shot login-shell command lines
 //   agent/profile.rs         AgentProfile, Dialog, DialogKind, TrustKey, ScreenState,
 //                            SignalHints, Unlock, LoginCheck, RpcLaunch, RpcLaunchOptions
 //   agent/detect.rs          shared screen-detection helpers

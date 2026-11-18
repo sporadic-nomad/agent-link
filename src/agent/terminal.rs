@@ -12,8 +12,8 @@ use super::delivery::Resolver;
 use super::state::{AgentProgram, Config, Controller};
 use super::{
     AbortReason, Activity, AgentLimits, AgentProfile, DeliveryOutcome, ForegroundPolicy,
-    Permissions, SendOptions, ShellFallback, ShellKind, Ticket, TicketId, Timing, TrustPolicy,
-    controller, delivery, monitor,
+    LaunchPlan, ModelChoice, Permissions, SendOptions, ShellFallback, ShellKind, Ticket, TicketId,
+    Timing, TrustPolicy, controller, delivery, monitor,
 };
 use crate::error::Result;
 use crate::{Event, SpawnMode, SpawnSpec, Terminal};
@@ -21,6 +21,9 @@ use crate::{Event, SpawnMode, SpawnSpec, Terminal};
 /// What an [`AgentTerminal`] runs and how its controller behaves.
 #[derive(Clone)]
 pub struct AgentSpec {
+    /// Private prototype. Capture only the provider's launch claim before spawning.
+    #[cfg(all(test, unix))]
+    pub(super) turn_launch: Option<super::turns::CaptureLaunch>,
     /// The agent; `None` for a bare shell: no launch, no gate, no activity and no agent
     /// events — [`state`](AgentTerminal::state) stays [`AgentState::ShellOnly`] until the
     /// session ends ([`AgentState::Exited`]), [`activity`](AgentTerminal::activity)
@@ -32,6 +35,10 @@ pub struct AgentSpec {
     pub permissions: Permissions,
     /// Pre-trust flags and dialog steering.
     pub trust: TrustPolicy,
+    /// Optional model and reasoning effort for a profile-built shell launch. `None`
+    /// (the default) uses the profile's ordinary launch. An explicit choice requires
+    /// a profile and [`SpawnMode::Shell`]. See [`AgentProfile::model_args`].
+    pub model: Option<ModelChoice>,
     /// Waits, windows and budgets.
     pub timing: Timing,
     /// Byte and job admission limits, including pending delivery events.
@@ -54,15 +61,39 @@ impl AgentSpec {
             ..Self::default()
         }
     }
+
+    /// Prepare an explicit selection before either tool rendering or child spawn.
+    fn selected_launch(&self, spec: &SpawnSpec, shell: ShellKind) -> Result<Option<LaunchPlan>> {
+        let Some(choice) = &self.model else {
+            return Ok(None);
+        };
+        let profile = self.profile.as_deref().ok_or_else(|| {
+            crate::Error::InvalidInput("model selection requires an agent profile".into())
+        })?;
+        if !matches!(spec.mode, SpawnMode::Shell(_)) {
+            return Err(crate::Error::InvalidInput(
+                "model selection requires a profile-built shell launch".into(),
+            ));
+        }
+        choice.validate(shell)?;
+        spec.input_limits.validate()?;
+        let mut plan = profile.launch(&self.permissions, &self.trust, &spec.cwd, shell);
+        let args = profile.model_args(choice, &plan.args)?;
+        plan.append_model_args(args)?;
+        Ok(Some(plan))
+    }
 }
 
 impl Default for AgentSpec {
     /// A bare shell.
     fn default() -> Self {
         Self {
+            #[cfg(all(test, unix))]
+            turn_launch: None,
             profile: None,
             permissions: Permissions::default(),
             trust: TrustPolicy::default(),
+            model: None,
             timing: Timing::default(),
             limits: AgentLimits::default(),
             foreground_policy: ForegroundPolicy::default(),
@@ -77,6 +108,7 @@ impl fmt::Debug for AgentSpec {
             .field("profile", &self.profile.as_ref().map(|p| p.id()))
             .field("permissions", &self.permissions)
             .field("trust", &self.trust)
+            .field("has_model_choice", &self.model.is_some())
             .field("timing", &self.timing)
             .field("limits", &self.limits)
             .field("foreground_policy", &self.foreground_policy)
@@ -146,6 +178,8 @@ pub enum AgentState {
 pub struct AgentTerminal {
     term: Terminal,
     ctl: Arc<Controller>,
+    #[cfg(all(test, unix))]
+    turns: Option<super::turns::Slot>,
     /// Serializes ticket assignment through enqueue, without holding the state lock.
     queueing: Mutex<()>,
     // Dropped after the terminal; never run filesystem cleanup under controller locks.
@@ -154,22 +188,57 @@ pub struct AgentTerminal {
 }
 
 impl AgentTerminal {
+    /// Preserve the resolved program through profile callbacks and PTY spawn so the
+    /// same shell is used to prepare and execute the launch line.
+    fn resolve_shell(spec: &mut SpawnSpec) -> ShellKind {
+        let SpawnMode::Shell(shell) = &mut spec.mode else {
+            return ShellKind::native();
+        };
+        let (program, _) = shell.resolve();
+        let kind = if cfg!(unix) {
+            ShellKind::for_unix_shell(&program)
+        } else {
+            ShellKind::native()
+        };
+        shell.program = Some(program);
+        kind
+    }
+
     /// Starts `spec` with an agent controller and returns the terminal with its first event
     /// receiver (PTY and agent events).
     ///
-    /// The screen model is forced on. With a profile the launch plan is built for
-    /// [`ShellKind::native`] (`cmd.exe` on Windows, else POSIX quoting) and its environment
-    /// merged into `spec.env` (a default only where the host policy does not set the key);
-    /// a shell inherits it, so the agent typed into it gets it too.
+    /// The screen model is forced on. For a profile-built shell launch, the launch plan
+    /// uses [`ShellKind::Fish`] for a Unix shell named `fish`, POSIX quoting for other
+    /// Unix shells, and `cmd.exe` quoting on Windows. The plan's environment is merged
+    /// into `spec.env` (a default only where the host policy does not set the key).
+    /// The agent started inside a shell inherits that environment from the shell.
     ///
-    /// Errors: those of [`Terminal::spawn`];
-    /// [`Error::InvalidInput`](crate::Error::InvalidInput) when the launch line cannot be
-    /// typed into the shell (an empty program, control characters, or a character
-    /// `cmd.exe` would expand), or when admission limits are invalid — before anything starts;
-    /// [`Error::Spawn`](crate::Error::Spawn) when a controller thread cannot start (the
-    /// session is torn down).
-    pub fn spawn(spec: SpawnSpec, agent: AgentSpec) -> Result<(AgentTerminal, Receiver<Event>)> {
-        Self::spawn_prepared(spec, agent, None)
+    /// # Errors
+    ///
+    /// Preparation can return these errors in addition to those from [`Terminal::spawn`].
+    ///
+    /// - [`Error::InvalidInput`](crate::Error::InvalidInput) for invalid admission limits
+    ///   or an untypable line (an empty program, a control character, or a character
+    ///   `cmd.exe` would expand). A [`ModelChoice`] requires a profile and a shell,
+    ///   nonblank identifiers that do not start with `-`, and a nonempty mapping
+    ///   compatible with the base arguments. Its full quoted command must fit the
+    ///   platform's canonical input line or the cmd.exe command-line limit.
+    /// - [`Error::Unsupported`](crate::Error::Unsupported) if the profile cannot map
+    ///   the whole model and effort request.
+    /// - [`Error::InputTooLarge`](crate::Error::InputTooLarge) if an explicit choice
+    ///   makes the quoted launch write, including the terminator and clear-line keys,
+    ///   exceed [`max_write_bytes`](crate::InputLimits::max_write_bytes).
+    ///
+    /// If a controller thread fails to start, the session is torn down and spawn
+    /// returns [`Error::Spawn`](crate::Error::Spawn).
+    pub fn spawn(
+        mut spec: SpawnSpec,
+        agent: AgentSpec,
+    ) -> Result<(AgentTerminal, Receiver<Event>)> {
+        agent.limits.validate()?;
+        let shell = Self::resolve_shell(&mut spec);
+        let plan = agent.selected_launch(&spec, shell)?;
+        Self::spawn_prepared(spec, agent, shell, plan)
     }
 
     /// Starts a PTY agent with consumer-owned CLI/MCP tools scoped to this launch.
@@ -180,9 +249,15 @@ impl AgentTerminal {
     /// argv; profile permission/trust arguments are still not added, matching ordinary
     /// Direct launches. Tool-configured Direct argv must be UTF-8. Unix login-shell
     /// startup files may change the child environment in Shell mode.
+    ///
+    /// For an explicit [`ModelChoice`], the profile arguments come first, then the
+    /// model arguments, then any tool arguments. The selected plan must fit both
+    /// the shell line limit and the PTY write budget before attachment preparation
+    /// and again with the tool arguments included.
+    /// Model selection errors are the same as for [`spawn`](Self::spawn).
     #[cfg(feature = "tools")]
     pub fn spawn_with_tools(
-        spec: SpawnSpec,
+        mut spec: SpawnSpec,
         agent: AgentSpec,
         tools: &crate::tools::AgentTools,
     ) -> Result<(AgentTerminal, Receiver<Event>)> {
@@ -191,8 +266,12 @@ impl AgentTerminal {
             .as_ref()
             .ok_or_else(|| crate::Error::InvalidInput("tools require an agent profile".into()))?;
         agent.limits.validate()?;
-        let plan = if let SpawnMode::Direct { program, args } = &spec.mode {
-            let mut launch = super::LaunchPlan::new(program.to_str().ok_or_else(|| {
+        let shell = Self::resolve_shell(&mut spec);
+        let plan = if let Some(plan) = agent.selected_launch(&spec, shell)? {
+            plan.launch_line(shell, Some(spec.input_limits.max_write_bytes))?;
+            tools.configure_pty(profile.as_ref(), plan)?
+        } else if let SpawnMode::Direct { program, args } = &spec.mode {
+            let mut launch = LaunchPlan::new(program.to_str().ok_or_else(|| {
                 crate::Error::InvalidInput("tool-configured executable must be UTF-8".into())
             })?);
             launch.args = args
@@ -204,12 +283,7 @@ impl AgentTerminal {
                 })
                 .collect::<Result<_>>()?;
             // Ordinary Direct launches still inherit the profile's launch environment.
-            let defaults = profile.launch(
-                &agent.permissions,
-                &agent.trust,
-                &spec.cwd,
-                ShellKind::native(),
-            );
+            let defaults = profile.launch(&agent.permissions, &agent.trust, &spec.cwd, shell);
             if defaults.tools.is_some() {
                 return Err(crate::Error::InvalidInput(
                     "profile already has tool attachments".into(),
@@ -224,22 +298,23 @@ impl AgentTerminal {
                 &agent.permissions,
                 &agent.trust,
                 &spec.cwd,
-                ShellKind::native(),
+                shell,
             )?
         };
-        Self::spawn_prepared(spec, agent, Some(plan))
+        Self::spawn_prepared(spec, agent, shell, Some(plan))
     }
 
     fn spawn_prepared(
         mut spec: SpawnSpec,
         agent: AgentSpec,
-        prepared: Option<super::LaunchPlan>,
+        shell: ShellKind,
+        prepared: Option<LaunchPlan>,
     ) -> Result<(AgentTerminal, Receiver<Event>)> {
-        agent.limits.validate()?;
         spec.screen.enabled = true;
         let direct = matches!(spec.mode, SpawnMode::Direct { .. });
-        let shell = ShellKind::native();
         let mut launch_line = None;
+        #[cfg(all(test, unix))]
+        let mut turn_claim = None;
         #[cfg(feature = "tools")]
         let mut tool_attachment = None;
         if let Some(profile) = &agent.profile {
@@ -255,13 +330,20 @@ impl AgentTerminal {
                 profile.launch(&agent.permissions, &agent.trust, &spec.cwd, shell)
             });
             plan.merge_env_into(&mut spec.env);
+            #[cfg(all(test, unix))]
+            if let Some(capture) = agent.turn_launch {
+                turn_claim = Some(capture(&spec, &plan)?);
+            }
             #[cfg(feature = "tools")]
             {
                 tool_attachment = plan.tools.clone();
             }
             if !direct {
-                let line = plan.command_line(shell)?;
-                launch_line = Some(format!("{line}{}", shell.line_terminator()));
+                let limit = agent
+                    .model
+                    .as_ref()
+                    .map(|_| spec.input_limits.max_write_bytes);
+                launch_line = Some(plan.launch_line(shell, limit)?);
             }
         }
         let trace = agent.trace.unwrap_or_else(|| {
@@ -283,6 +365,7 @@ impl AgentTerminal {
             profile_id,
             profile: agent.profile,
             launch_line,
+            has_model_choice: agent.model.is_some(),
             reset_command,
             shell,
             trust: agent.trust,
@@ -295,6 +378,8 @@ impl AgentTerminal {
         let has_profile = cfg.profile.is_some();
         let launches = cfg.launch_line.is_some();
         let ctl = Arc::new(Controller::new(cfg, term.handle(), monitor_tx));
+        #[cfg(all(test, unix))]
+        let turns = turn_claim.map(|claim| super::turns::Slot::new(claim, &ctl));
         if direct && has_profile {
             // The child is the agent: armed from its first output on.
             ctl.update_quietly(|st, now| {
@@ -310,6 +395,8 @@ impl AgentTerminal {
         let agent_term = AgentTerminal {
             term,
             ctl,
+            #[cfg(all(test, unix))]
+            turns,
             queueing: Mutex::new(()),
             #[cfg(feature = "tools")]
             _tools: tool_attachment,
@@ -672,6 +759,19 @@ impl AgentTerminal {
     pub fn terminal(&self) -> &Terminal {
         &self.term
     }
+
+    #[cfg(all(test, unix))]
+    pub(super) fn attach_turns(
+        &self,
+        source: impl super::turns::Source,
+        parser: impl super::turns::Parser,
+        options: super::turns::Options,
+    ) -> std::result::Result<super::turns::TurnReceiver, super::turns::AttachError> {
+        self.turns
+            .as_ref()
+            .ok_or(super::turns::AttachError::NoLaunch)?
+            .attach(&self.ctl, source, parser, options)
+    }
 }
 
 impl Drop for AgentTerminal {
@@ -745,6 +845,7 @@ mod limit_tests {
             profile: Some(Arc::new(Profile)),
             profile_id: "limit-test".into(),
             launch_line: Some("echo should-not-launch\n".into()),
+            has_model_choice: false,
             reset_command: Some("/new"),
             shell: ShellKind::Posix,
             trust: TrustPolicy::default(),
@@ -759,6 +860,7 @@ mod limit_tests {
             AgentTerminal {
                 term,
                 ctl,
+                turns: None,
                 queueing: Mutex::new(()),
                 #[cfg(feature = "tools")]
                 _tools: None,

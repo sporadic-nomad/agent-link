@@ -16,9 +16,10 @@
 //!   up, and does the composer still hold text just sent. [`AgentProfile::classify`] puts a
 //!   dialog before readiness.
 //! - It also says how to start the agent: [`AgentProfile::launch`] builds a [`LaunchPlan`]
-//!   for a [`Permissions`] posture and a [`TrustPolicy`], typed into the PTY's shell as
-//!   [`LaunchPlan::command_line`] for a [`ShellKind`]; plus the reset command, `PATH`
-//!   launchers, [`SignalHints`], a [`LoginCheck`] and an [`RpcLaunch`].
+//!   for a [`Permissions`] posture and a [`TrustPolicy`]. [`AgentProfile::model_args`]
+//!   maps an optional [`ModelChoice`] onto that plan before [`LaunchPlan::command_line`]
+//!   quotes it for the PTY's [`ShellKind`]. The profile also supplies the reset command,
+//!   `PATH` launchers, [`SignalHints`], a [`LoginCheck`] and an [`RpcLaunch`].
 //! - [`profiles`] holds the built-ins (claude, codex, pi, opencode, cursor) and
 //!   [`ProfileRegistry`]; [`detect`] holds the screen helpers they share, for a host
 //!   writing its own profile.
@@ -75,13 +76,15 @@ mod startup;
 mod state;
 mod terminal;
 mod timing;
+#[cfg(all(test, unix))]
+mod turns;
 mod verify;
 
 pub use activity::Activity;
 pub use delivery::{
     AbortReason, DeliveryOutcome, Revalidate, SendOptions, ShellFallback, Ticket, TicketId,
 };
-pub use launch::{LaunchPlan, ShellKind};
+pub use launch::{LaunchPlan, ModelChoice, ShellKind};
 pub use limits::AgentLimits;
 pub use permissions::{ForegroundPolicy, Permissions, PreTrust, TrustPolicy};
 pub use profile::{

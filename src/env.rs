@@ -214,6 +214,17 @@ impl EnvPolicy {
         self.last_set(key)
     }
 
+    /// Snapshot a non-PATH launch setting before spawn, after the profile merge.
+    #[cfg(all(test, unix, feature = "agent"))]
+    pub(crate) fn launch_value(&self, key: &OsStr) -> Option<OsString> {
+        if self.removes(key) {
+            return None;
+        }
+        self.last_set(key)
+            .map(OsStr::to_owned)
+            .or_else(|| self.inherit.then(|| std::env::var_os(key)).flatten())
+    }
+
     /// The last `set` value for `key`, ignoring `remove`.
     fn last_set(&self, key: &OsStr) -> Option<&OsStr> {
         self.set

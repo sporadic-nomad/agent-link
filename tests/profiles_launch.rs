@@ -1,17 +1,17 @@
 //! The built-in profiles' launch and data rows: launch argv/env per agent, approval posture
-//! and pre-trust, the typed command lines for POSIX shells and cmd.exe, the stdio launches
-//! and login checks (compared with the strings hosts use today), and the registry.
+//! and pre-trust, model selection, the typed command lines for POSIX shells and cmd.exe,
+//! the stdio launches and login checks, and the registry.
 #![cfg(feature = "agent")]
 
 use std::path::Path;
 use std::sync::Arc;
 
-use agent_link::KnownTerminal;
 use agent_link::agent::profiles::{ClaudeProfile, claude, opencode};
 use agent_link::agent::{
-    AgentProfile, Dialog, LaunchPlan, Permissions, PreTrust, ProfileRegistry, RpcLaunch,
-    RpcLaunchOptions, ShellKind, SignalHints, TrustPolicy, Unlock,
+    AgentProfile, Dialog, LaunchPlan, ModelChoice, Permissions, PreTrust, ProfileRegistry,
+    RpcLaunch, RpcLaunchOptions, ShellKind, SignalHints, TrustPolicy, Unlock,
 };
+use agent_link::{Error, KnownTerminal};
 
 const IDS: [&str; 5] = ["claude", "opencode", "pi", "codex", "cursor"];
 /// A cwd that does not exist, so it is used as given (an existing one is canonicalised).
@@ -154,6 +154,7 @@ fn new_agent_specs_default_to_unattended_permissions_without_folder_trust() {
         let p = profile(id);
         let spec = AgentSpec::new(Arc::clone(&p));
         assert_eq!(spec.permissions, Permissions::Unattended, "{id}");
+        assert_eq!(spec.model, None, "{id}");
         assert_eq!(spec.trust.pre_trust, PreTrust::Off, "{id}");
         assert!(!spec.trust.steer_dialogs, "{id}");
         for shell in [ShellKind::Posix, ShellKind::Cmd] {
@@ -167,6 +168,15 @@ fn new_agent_specs_default_to_unattended_permissions_without_folder_trust() {
             assert_eq!(actual.env_defaults, expected.env_defaults, "{id}");
         }
     }
+}
+
+#[test]
+fn a_spec_reports_only_the_presence_of_a_model_choice_in_debug_output() {
+    let mut spec = agent_link::agent::AgentSpec::new(profile("pi"));
+    spec.model = Some(ModelChoice::new("private-deployment").with_effort("private-level"));
+    let shown = format!("{spec:?}");
+    assert!(shown.contains("has_model_choice: true"));
+    assert!(!shown.contains("private-"));
 }
 
 #[test]
@@ -259,6 +269,204 @@ fn every_agent_posture_and_shell_gives_a_typable_line() {
             }
         }
     }
+}
+
+fn check_model_launch(id: &str, choice: &ModelChoice, expected_words: &[&str]) {
+    let profile = profile(id);
+    for (shell, quoted_model) in [
+        (ShellKind::Posix, "'provider/model:tag [1m]'"),
+        (ShellKind::Cmd, r#""provider/model:tag [1m]""#),
+    ] {
+        let mut rendered = expected_words.to_vec();
+        rendered[1] = quoted_model;
+        let suffix = rendered.join(" ");
+        for perms in [Permissions::Unattended, Permissions::AgentDefault, custom()] {
+            for pre_trust in [PreTrust::Off, PreTrust::FlagsOnly] {
+                let mut plan = profile.launch(&perms, &trust(pre_trust), Path::new(CWD), shell);
+                let expected_line = format!("{} {suffix}", plan.command_line(shell).unwrap());
+                let args = profile.model_args(choice, &plan.args).unwrap();
+                assert_eq!(
+                    args, expected_words,
+                    "{id} {perms:?} {pre_trust:?} {shell:?}"
+                );
+                plan.args.extend(args);
+                assert_eq!(plan.command_line(shell).unwrap(), expected_line);
+            }
+        }
+    }
+}
+
+#[test]
+fn model_and_effort_words_follow_every_posture_and_pre_trust_line() {
+    const MODEL: &str = "provider/model:tag [1m]";
+    let model = ModelChoice::new(MODEL);
+    for (id, model_flag, effort_flag, levels) in [
+        ("claude", "--model", "--effort", "low medium high xhigh max"),
+        (
+            "codex",
+            "-m",
+            "-c",
+            "none minimal low medium high xhigh max ultra persistent",
+        ),
+        (
+            "pi",
+            "--model",
+            "--thinking",
+            "off minimal low medium high xhigh max",
+        ),
+    ] {
+        check_model_launch(id, &model, &[model_flag, MODEL]);
+        for level in levels.split_whitespace() {
+            let value = if id == "codex" {
+                format!("model_reasoning_effort={level}")
+            } else {
+                level.to_owned()
+            };
+            let choice = model.clone().with_effort(level);
+            check_model_launch(id, &choice, &[model_flag, MODEL, effort_flag, &value]);
+        }
+    }
+}
+
+#[test]
+fn profiles_refuse_efforts_outside_their_vocabulary_and_typed_toml_values() {
+    for (id, level) in [
+        ("claude", "off"),
+        ("pi", "none"),
+        ("codex", "off"),
+        ("codex", "true"),
+        ("codex", "[1]"),
+    ] {
+        let choice = ModelChoice::new("example").with_effort(level);
+        let error = profile(id).model_args(&choice, &[]).unwrap_err();
+        assert!(
+            matches!(error, Error::Unsupported(_)),
+            "{id} {level} {error}"
+        );
+    }
+}
+
+#[test]
+fn deferred_and_custom_profiles_refuse_an_explicit_choice() {
+    let custom: Arc<dyn AgentProfile> = Arc::new(Scripted);
+    for profile in [profile("opencode"), profile("cursor"), custom] {
+        for choice in [
+            ModelChoice::new("id"),
+            ModelChoice::new("id").with_effort("high"),
+        ] {
+            let error = profile.model_args(&choice, &[]).unwrap_err();
+            assert!(
+                matches!(error, Error::Unsupported(_)),
+                "{} {error}",
+                profile.id()
+            );
+        }
+    }
+}
+
+fn mapped_args(id: &str, choice: &ModelChoice, base: &[&str]) -> agent_link::Result<Vec<String>> {
+    let base: Vec<String> = base.iter().map(|arg| (*arg).into()).collect();
+    profile(id).model_args(choice, &base)
+}
+
+#[test]
+fn profiles_refuse_conflicts_and_missing_operands_before_the_model_options() {
+    let model = ModelChoice::new("selected");
+    let both = model.clone().with_effort("high");
+    for (id, choice, base) in [
+        ("claude", &model, &["--model", "old"][..]),
+        ("claude", &model, &["--model=old"]),
+        ("claude", &both, &["--effort=low"]),
+        ("claude", &model, &["--system-prompt"]),
+        ("pi", &model, &["--model", "old"]),
+        ("pi", &both, &["--thinking", "low"]),
+        ("pi", &model, &["--system-prompt"]),
+        ("codex", &model, &["-m", "old"]),
+        ("codex", &model, &["-mold"]),
+        ("codex", &model, &["-m=old"]),
+        ("codex", &model, &["--model", "old"]),
+        ("codex", &model, &["--model=old"]),
+        ("codex", &model, &["-c", "model=old"]),
+        ("codex", &model, &["--config", " model = 'old'"]),
+        ("codex", &model, &["--config=model=old"]),
+        ("codex", &model, &["-cmodel=old"]),
+        ("codex", &both, &["-c=model_reasoning_effort=low"]),
+        ("codex", &both, &["--config", "model_reasoning_effort=low"]),
+        ("codex", &model, &["--config"]),
+    ] {
+        let error = mapped_args(id, choice, base).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidInput(_)),
+            "{id} {base:?} {error}"
+        );
+    }
+}
+
+#[test]
+fn pi_equals_form_extension_flags_allow_explicit_model_and_effort() {
+    let choice = ModelChoice::new("selected").with_effort("high");
+    for flag in ["--model=extension-value", "--thinking=extension-value"] {
+        assert_eq!(
+            mapped_args("pi", &choice, &[flag]).unwrap(),
+            ["--model", "selected", "--thinking", "high"]
+        );
+    }
+}
+
+#[test]
+fn model_without_separate_effort_allows_base_effort_flags_and_option_names_as_data() {
+    let model = ModelChoice::new("selected");
+    for (id, model_flag, base) in [
+        (
+            "claude",
+            "--model",
+            &["--effort", "low", "--system-prompt", "--model"][..],
+        ),
+        (
+            "pi",
+            "--model",
+            &["--thinking", "low", "--system-prompt", "--model"],
+        ),
+        ("pi", "--model", &["--models", "provider/*"]),
+        (
+            "codex",
+            "-m",
+            &["-c", "model_reasoning_effort=low", "model=old"],
+        ),
+        ("codex", "-m", &["--config=other=model=old"]),
+    ] {
+        assert_eq!(
+            mapped_args(id, &model, base).unwrap(),
+            [model_flag, "selected"],
+            "{id} {base:?}"
+        );
+    }
+    assert_eq!(
+        mapped_args("pi", &ModelChoice::new("provider/model:high"), &[]).unwrap(),
+        ["--model", "provider/model:high"]
+    );
+}
+
+#[test]
+fn a_model_with_shell_expansion_characters_is_posix_only() {
+    let profile = profile("claude");
+    let choice = ModelChoice::new("%NAME%!");
+    let mut plan = plan(
+        "claude",
+        &Permissions::AgentDefault,
+        PreTrust::Off,
+        ShellKind::Posix,
+    );
+    plan.args
+        .extend(profile.model_args(&choice, &plan.args).unwrap());
+    assert_eq!(
+        plan.command_line(ShellKind::Posix).unwrap(),
+        "claude --model '%NAME%!'"
+    );
+    assert!(matches!(
+        plan.command_line(ShellKind::Cmd),
+        Err(Error::InvalidInput(_))
+    ));
 }
 
 fn codex_trust_arg(cwd: &str) -> String {

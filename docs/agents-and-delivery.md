@@ -32,6 +32,45 @@ If `AgentSpec::profile` is `None` (`AgentSpec::default()`), `AgentTerminal` runs
 
 For `SpawnMode::Direct` with a profile, the child itself *is* the agent: `spawn()` arms the startup gate immediately and `launch()` is a no-op. Note that `AgentSpec::permissions` does **not** rewrite host-supplied `Direct` arguments; build those arguments from `profile.launch(...)` if you want profile policy applied.
 
+To select a model, set `agent.model = Some(ModelChoice::new("provider/model:tag"))`
+before spawning a profile in a shell. Import `agent_link::agent::ModelChoice` and
+chain `.with_effort("high")` to request an explicit effort argument. The CLI
+interprets the model string itself. For example, Pi can infer its thinking level
+from a `:high` suffix. [Pi 1.5.2 model resolver](https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/packages/coding-agent/src/core/model-resolver.ts)
+
+With `model: None` (the default), the CLI gets the profile's ordinary launch
+arguments. With an explicit choice, the order is permission and trust arguments,
+model arguments, then tool arguments. Environment precedence is the same in both
+cases. Explicit launch and delivery-triggered relaunch use the line prepared at spawn.
+The resolved shell executable selects the quoting rules. On Unix, a shell named
+`fish` uses fish quoting, which preserves literal backslashes and apostrophes.
+Other Unix shell names use POSIX quoting. Windows uses `cmd.exe` quoting.
+
+A choice on a bare shell or Direct child returns `Error::InvalidInput`. The same
+error covers blank, control-bearing or flag-leading identifiers, words the selected
+shell renderer cannot quote, an empty mapping, or a conflict with existing model
+options. A standalone `--` in the base arguments is reserved as the end of options.
+If the profile cannot map the model or the requested effort, spawn returns
+`Error::Unsupported`. The mapped labels and their versioned sources are listed
+under [PTY model and reasoning effort](#pty-model-and-reasoning-effort).
+
+For an explicit choice, `Error::InputTooLarge` reports the byte count of the typed
+launch, including quoting, clear-line keys and Enter, against
+`SpawnSpec::input_limits.max_write_bytes`. If the write fits that budget, spawn
+returns `Error::InvalidInput` when the quoted command before Enter exceeds the
+shell line limit. Unix shells can read in canonical mode, so the check allows
+4,095 UTF-8 bytes on Linux and Android, 1,023 on Apple platforms, or a conservative
+254 on other POSIX targets. The cmd.exe limit is 8,191 UTF-16 code units.
+[Linux canonical input](https://docs.kernel.org/driver-api/tty/n_tty.html) ·
+[Darwin tty input limit](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/tty.h) ·
+[POSIX terminal limits](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/limits.h.html) ·
+[cmd.exe command-line limit](https://learn.microsoft.com/en-us/troubleshoot/windows-client/shell-experience/command-line-string-limitation)
+
+These checks run before spawning the shell. With tools, model validation precedes
+tool configuration, and the final line must also fit. At launch time the write
+still goes through normal PTY queue admission. Startup marker warnings for
+selected launches omit screen rows, which can contain the echoed command.
+
 ---
 
 ## Agent State, `blocking`, and `Activity`
@@ -237,6 +276,33 @@ registry.register(Arc::new(ClaudeProfile::accepting_bypass_warning(false)));
 registry.register(Arc::new(PiProfile::with_trust(PiTrust::SessionOnly)));
 ```
 
+### PTY model and reasoning effort
+
+| Built-in profile | Model argv | Optional effort argv | Accepted effort levels |
+| --- | --- | --- | --- |
+| Claude | `--model <id>` | `--effort <level>` | `low`, `medium`, `high`, `xhigh`, `max` |
+| Codex | `-m <id>` | `-c model_reasoning_effort=<level>` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `persistent` |
+| Pi | `--model <id>` | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| OpenCode and Cursor | Explicit choices return `Error::Unsupported`. | — | — |
+
+Claude Code 2.1.327 and Pi 1.5.2 list these flags and levels in `--help`.
+Pi treats `--model=…` and `--thinking=…` as extension flags. Either can appear
+in custom launch arguments alongside an explicit model and effort.
+[Claude Code 2.1.327 package](https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/2.1.327) ·
+[Pi 1.5.2 CLI parser](https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/packages/coding-agent/src/cli/args.ts)
+
+Codex CLI 0.170.0 defines the model switch and config override syntax in its argument
+parser. The profile maps the named reasoning efforts from that version to fixed
+strings for the `model_reasoning_effort` config key.
+[Model flag](https://github.com/openai/codex/blob/29eb79e9866b3262a777fdf8195c1b9e63684c91/codex-rs/utils/cli/src/shared_options.rs#L22-L24) ·
+[Config overrides](https://github.com/openai/codex/blob/29eb79e9866b3262a777fdf8195c1b9e63684c91/codex-rs/utils/cli/src/config_override.rs) ·
+[Config schema](https://github.com/openai/codex/blob/29eb79e9866b3262a777fdf8195c1b9e63684c91/codex-rs/core/config.schema.json#L8809) ·
+[Effort labels](https://github.com/openai/codex/blob/29eb79e9866b3262a777fdf8195c1b9e63684c91/codex-rs/protocol/src/openai_models.rs#L91-L103)
+
+Synthetic launch tests check argv construction and quoting for POSIX shells, fish,
+and `cmd.exe`. The CLI resolves the model and its available effort levels for the
+account when launched. [Profile launch tests](../tests/profiles_launch.rs)
+
 ---
 
 ## Writing a Custom `AgentProfile`
@@ -251,6 +317,7 @@ Implement `agent::AgentProfile` (`Send + Sync`) to support another CLI or custom
   - `question_dialog(&self, screen: &str) -> bool` — recognize a question currently taking keyboard input. The default returns `false`, which all built-in profiles currently inherit. Use `detect::dialog_at_bottom` with markers from a recorded version of the CLI. It skips blank rows and recognized rules or box edges below the footer. A redrawn empty composer such as `❯` closes the block.
   - `launchers(&self) -> &'static [&'static str]`
   - `launch(&self, perms, trust, cwd, shell) -> LaunchPlan`
+  - `model_args(&self, choice: &ModelChoice, base_args: &[String]) -> Result<Vec<String>>` — return unquoted words for the entire selection. Check the base arguments for duplicate settings of the requested fields in the CLI's option syntax. Return `InvalidInput` for a conflict and `Unsupported` for an unmapped choice or effort. The default returns `Unsupported`.
   - `pending_input(&self, screen, sent) -> Option<bool>` — defaults to `detect::pending_input_default(screen, sent)` (`Some(true)` = still in composer, `Some(false)` = submitted/cleared, `None` = unreadable).
   - `reset_command(&self) -> Option<&'static str>`
   - `reset_rejected(&self, fresh_screen: &str) -> bool` — defaults to `false`. Match a complete refusal in its recorded CLI layout. The controller also runs the matcher against the pre-Enter rows to distinguish an old notice exposed by a redraw.

@@ -53,6 +53,9 @@ pub(crate) struct Config {
     /// The line [`launch`](super::AgentTerminal::launch) types, terminator included; `None`
     /// without a profile or for a direct child (it already is the agent).
     pub(crate) launch_line: Option<String>,
+    /// A selected model can appear anywhere on the startup screen, including shell echo.
+    /// Marker diagnostics for these launches omit screen contents.
+    pub(crate) has_model_choice: bool,
     /// The profile's fresh-conversation command, read once at spawn; `None` without a
     /// profile or when it has none (a reset is then `Unsupported`).
     pub(crate) reset_command: Option<&'static str>,
@@ -874,11 +877,15 @@ impl CtlState {
         }
     }
 
-    /// Names the profile, the time since launch and the identity, and shows the bottom
-    /// rows normalised, so a CLI that reworded its dialog or composer is triaged from the
-    /// log.
+    /// Names the profile and time since launch. For a launch with default model
+    /// selection, the terminal identity and bottom rows help diagnose changed markers.
     fn marker_report(&self, elapsed_ms: u128, screen: &str) -> String {
         let profile = &self.cfg.profile_id;
+        if self.cfg.has_model_choice {
+            return format!(
+                "startup markers not recognised for {profile} after {elapsed_ms} ms (model choice supplied)"
+            );
+        }
         let text = ScreenText::from_text(screen);
         let rows: Vec<String> = text
             .bottom_rows(REPORT_ROWS)

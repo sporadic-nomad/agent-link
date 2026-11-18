@@ -126,6 +126,7 @@ impl Session {
             profile: Some(profile),
             profile_id: "blocked-delivery".into(),
             launch_line: None,
+            has_model_choice: false,
             reset_command: None,
             shell: ShellKind::Posix,
             trust: TrustPolicy::default(),

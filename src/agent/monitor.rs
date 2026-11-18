@@ -329,6 +329,7 @@ mod tests {
             profile: Some(Arc::new(Quiet)),
             profile_id: "quiet".into(),
             launch_line: None,
+            has_model_choice: false,
             reset_command: None,
             shell: ShellKind::Posix,
             trust: TrustPolicy::default(),

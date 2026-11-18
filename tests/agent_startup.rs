@@ -7,11 +7,23 @@
 
 mod common;
 
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use agent_link::agent::{Activity, AgentSpec, AgentState, AgentTerminal, Timing, TrustPolicy};
-use agent_link::{Error, Event, PtySize, SpawnSpec};
-use common::agent::{activity_until, spawn_agent, start_agent_shell, states_until};
+use agent_link::agent::{
+    Activity, AgentProfile, AgentSpec, AgentState, AgentTerminal, DeliveryOutcome, Dialog,
+    LaunchPlan, ModelChoice, Permissions, ShellKind, Timing, TrustPolicy,
+};
+use agent_link::shell::ShellSpec;
+use agent_link::{Error, Event, ForegroundOwner, PtySize, SpawnMode, SpawnSpec};
+use common::agent::{
+    activity_until, spawn_agent, start_agent_shell, start_agent_shell_spec, states_until,
+};
+use common::delivery::{outcome, submit};
 use common::fake::{READY_MARKER, fake_profile};
 use common::{LAUNCH_WAIT, WAIT, fake_agent_path, logger, screen_contains, wait_event, wait_until};
 use crossbeam_channel::Receiver;
@@ -218,6 +230,207 @@ fn a_direct_agent_is_armed_at_spawn() {
     term.launch().unwrap();
     let seen = states_until(&term, &events, LAUNCH_WAIT, is_ready);
     assert_eq!(seen, [(Starting, true), (Ready, false)]);
+}
+
+#[derive(Default)]
+struct ModelPeer {
+    launches: AtomicUsize,
+    mappings: AtomicUsize,
+}
+
+impl AgentProfile for ModelPeer {
+    fn id(&self) -> &str {
+        "model-peer"
+    }
+    fn dialog(&self, _: &str) -> Option<Dialog> {
+        None
+    }
+    fn input_ready(&self, screen: &str) -> bool {
+        screen.contains(READY_MARKER)
+    }
+    fn launch(
+        &self,
+        perms: &Permissions,
+        _: &TrustPolicy,
+        _: &Path,
+        shell: ShellKind,
+    ) -> LaunchPlan {
+        self.launches.fetch_add(1, Ordering::Relaxed);
+        LaunchPlan::new("./model-peer")
+            .with_permissions(perms, &[], &[])
+            .for_shell(shell)
+    }
+    fn model_args(&self, choice: &ModelChoice, _: &[String]) -> agent_link::Result<Vec<String>> {
+        self.mappings.fetch_add(1, Ordering::Relaxed);
+        let mut args = vec!["--model".into(), choice.model.clone()];
+        if let Some(effort) = &choice.effort {
+            args.extend(["--effort".into(), effort.clone()]);
+        }
+        Ok(args)
+    }
+}
+
+fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let path = dir.join(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+
+#[test]
+fn explicit_launch_and_delivery_relaunch_reuse_the_selected_argv() {
+    let home = tempfile::tempdir().unwrap();
+    // Record each word before handing the PTY to the usual fake composer.
+    write_script(
+        home.path(),
+        "model-peer",
+        "printf '%s\\n' \"$PEER_POLICY\" \"$@\" >> received-argv\nexec \"$PEER_PROGRAM\" ready",
+    );
+    let report = home.path().join("received-argv");
+    let model = "provider/model [1m]:tag";
+    // Fill the canonical input line with a base argument before the selection.
+    // Both the first launch and the cached relaunch must deliver the trailing words.
+    let line_limit = if cfg!(any(target_os = "linux", target_os = "android")) {
+        4095
+    } else if cfg!(target_vendor = "apple") {
+        1023
+    } else {
+        254
+    };
+    let fixed_bytes =
+        "./model-peer --custom-policy ".len() + format!(" --model '{model}' --effort high").len();
+    let padding = "p".repeat(line_limit - fixed_bytes);
+    let profile = Arc::new(ModelPeer::default());
+    let agent = AgentSpec {
+        model: Some(ModelChoice::new(model).with_effort("high")),
+        permissions: Permissions::Custom {
+            args: vec!["--custom-policy".into(), padding.clone()],
+            env: vec![("PEER_POLICY".into(), "custom".into())],
+        },
+        timing: long_window(),
+        ..AgentSpec::new(profile.clone())
+    };
+    let mut spec = common::sh_spec(home.path());
+    spec.env
+        .set("PEER_PROGRAM", fake_agent_path())
+        .set("PEER_POLICY", "host");
+    // The quoted argv, shell terminator and line-clearing keys fit exactly.
+    spec.input_limits.max_write_bytes = line_limit + b" \x15\n".len();
+    let (term, events) = start_agent_shell_spec(spec, agent);
+    term.launch().unwrap();
+    states_until(&term, &events, LAUNCH_WAIT, is_ready);
+    let expected =
+        format!("custom\n--custom-policy\n{padding}\n--model\n{model}\n--effort\nhigh\n");
+    assert_eq!(fs::read_to_string(&report).unwrap(), expected);
+
+    term.terminal().write(b"\x03").unwrap();
+    wait_until("the shell in front", || {
+        term.terminal().foreground().owner == ForegroundOwner::Shell
+    });
+    let ticket = term.send("after relaunch", submit());
+    assert_eq!(outcome(&term, &events, &ticket), DeliveryOutcome::Delivered);
+    assert_eq!(fs::read_to_string(report).unwrap(), expected.repeat(2));
+    assert_eq!(profile.launches.load(Ordering::Relaxed), 1);
+    assert_eq!(profile.mappings.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn a_model_launch_uses_fish_quoting_for_the_resolved_shell() {
+    let home = tempfile::tempdir().unwrap();
+    let fish = write_script(
+        home.path(),
+        "fish",
+        "printf 'fish fixture ready\\r\\n'\nIFS= read -r line\nprintf '%s\\n' \"$line\" > received-line",
+    );
+    let mut spec = common::sh_spec(home.path());
+    spec.mode = SpawnMode::Shell(ShellSpec {
+        program: Some(fish),
+        login: false,
+    });
+    let agent = AgentSpec {
+        model: Some(ModelChoice::new(r"provider\model's\").with_effort("%self")),
+        ..AgentSpec::new(Arc::new(ModelPeer::default()))
+    };
+    let (term, _events) = spawn_agent(spec, agent);
+    screen_contains(term.terminal(), "fish fixture ready", WAIT);
+    term.launch().unwrap();
+    let report = home.path().join("received-line");
+    wait_until("the shell recorded the launch line", || {
+        fs::read_to_string(&report).is_ok_and(|line| line.ends_with('\n'))
+    });
+    assert_eq!(
+        fs::read_to_string(report).unwrap().trim_end(),
+        r"./model-peer --model 'provider\\model\'s\\' --effort '%self'"
+    );
+}
+
+#[test]
+fn rejected_model_requests_leave_the_child_start_marker_absent() {
+    let home = tempfile::tempdir().unwrap();
+    let marker = home.path().join("child-started");
+    let program = write_script(home.path(), "mark-start", ": > child-started");
+    let mut shell = common::sh_spec(home.path());
+    let direct = SpawnSpec::direct(&program, [] as [&str; 0], home.path(), shell.size);
+    shell.mode = SpawnMode::Shell(ShellSpec {
+        program: Some(program),
+        login: false,
+    });
+    // Check that a successful spawn of this shell writes the marker.
+    let (term, events) = spawn_agent(shell.clone(), AgentSpec::default());
+    wait_event(term.terminal(), &events, LAUNCH_WAIT, |e| {
+        matches!(e, Event::Exit { .. })
+    });
+    assert!(marker.exists());
+    fs::remove_file(&marker).unwrap();
+
+    let refused = |spec, agent| {
+        let error = {
+            let _guard = common::spawn_lock();
+            AgentTerminal::spawn(spec, agent).unwrap_err()
+        };
+        assert!(!marker.exists(), "child started on refusal: {error}");
+        error
+    };
+    let mut agent = AgentSpec {
+        model: Some(ModelChoice::new("selected")),
+        ..AgentSpec::default()
+    };
+    assert!(matches!(
+        refused(shell.clone(), agent.clone()),
+        Error::InvalidInput(_)
+    ));
+    agent.profile = Some(fake_profile("ready", &[])); // default hook
+    assert!(matches!(
+        refused(direct, agent.clone()),
+        Error::InvalidInput(_)
+    ));
+    assert!(matches!(
+        refused(shell.clone(), agent.clone()),
+        Error::Unsupported(_)
+    ));
+    agent.profile = Some(Arc::new(ModelPeer::default()));
+    agent.model = Some(ModelChoice::new("selected").with_effort("bad\nlevel"));
+    assert!(matches!(
+        refused(shell.clone(), agent.clone()),
+        Error::InvalidInput(_)
+    ));
+    agent.model = Some(ModelChoice::new("selected").with_effort("high"));
+    let long_base = AgentSpec {
+        permissions: Permissions::Custom {
+            args: vec!["p".repeat(4095)],
+            env: Vec::new(),
+        },
+        ..agent.clone()
+    };
+    assert!(matches!(
+        refused(shell.clone(), long_base),
+        Error::InvalidInput(_)
+    ));
+    shell.input_limits.max_write_bytes = 1;
+    assert!(matches!(
+        refused(shell, agent),
+        Error::InputTooLarge { limit: 1, .. }
+    ));
 }
 
 /// No profile: only session events — not for a spinner title or progress, not at the exit.

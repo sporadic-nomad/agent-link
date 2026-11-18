@@ -21,7 +21,7 @@ pub(super) struct Planned {
 }
 
 /// Builds `spec`'s command, or refuses it: [`Error::InvalidInput`] for an empty launcher, a
-/// cwd that is not a directory, an empty shell or a word the POSIX quoting refuses (unix);
+/// cwd that is not a directory, an empty shell or a word the shell quoting refuses (unix);
 /// [`Error::NotFound`] for a launcher not on the child's `PATH` (Windows).
 pub(super) fn plan(spec: &RpcSpawnSpec) -> Result<Planned> {
     spec.limits.validate()?;
@@ -94,9 +94,7 @@ fn program(spec: &RpcSpawnSpec, env: &EnvPolicy) -> Result<Planned> {
     Ok(Planned { command, resolved })
 }
 
-/// `exec <launcher> <args…>` for `shell`, each word quoted by [`login_shell_command`] (POSIX
-/// quoting — a plain word stays bare, so today's launches stay byte-identical, e.g. `exec pi
-/// --mode rpc --no-session`; a control character is refused; fish-safe backslashes).
+/// `exec <launcher> <args…>` for `shell`, each word quoted by [`login_shell_command`].
 ///
 /// `exec` is load-bearing: the agent replaces the shell, so the pid the handle holds, the
 /// exit code it reaps and the process group it kills are the agent's, not those of a

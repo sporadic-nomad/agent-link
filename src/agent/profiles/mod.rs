@@ -8,17 +8,20 @@
 //! | `launch()` program | `claude` | `codex` | `pi` | `opencode` | `agent` |
 //! | unattended (default) | `--permission-mode bypassPermissions` if the profile accepts the bypass warning | `--dangerously-bypass-approvals-and-sandbox` | no flags needed | env default `OPENCODE_PERMISSION={"*":"allow"}` | `--force` (explicit denies still apply) |
 //! | every launch | — | `-c check_for_update_on_startup=false` | — | — | — |
+//! | explicit PTY model and optional effort | `--model`, `--effort` | `-m`, `-c model_reasoning_effort=…` | `--model`, `--thinking` | unsupported | unsupported |
 //! | pre-trust ([`PreTrust::FlagsOnly`](crate::agent::PreTrust::FlagsOnly)) | — | `-c projects={"<cwd>"={trust_level="trusted"}}`, not under cmd.exe; saves nothing | `--approve`; saves nothing | — | `--trust`; **saves** a trust record |
 //! | `reset_command()` | `/clear` | `/clear` | `/new` | `/new` | `/new` |
 //! | `login_check()` | `auth status` | `login status` | — | — | — |
 //! | `rpc_launch()` (unattended) | [`CLAUDE_RPC_FLAGS`](claude::CLAUDE_RPC_FLAGS) + bypass mode (+ `--continue`) | [`CODEX_RPC_FLAGS`](codex::CODEX_RPC_FLAGS) + `-c approval_policy="never" -c sandbox_mode="danger-full-access"` | [`PI_RPC_FLAGS`](pi::PI_RPC_FLAGS) (+ `--continue`, or `--no-session` for a probe) | [`OPENCODE_RPC_FLAGS`](opencode::OPENCODE_RPC_FLAGS) + unattended env default | — |
 //! | title spinner | no (`✳`/`◐`) | Braille | not seen | not measured | not measured |
 //! | sync frames | VS Code identity only | always | always | once DECRQM 2026 is answered | not at cold launch |
-//! | verified on | 2.1.293; live smoke 2.1.295 | 0.154.0 (dialog wording since 0.142.5) | 0.85.1 | 1.18.21 | trust screen: cursor-agent 2026.09.23 |
+//! | screen evidence | 2.1.293; live smoke 2.1.295 | 0.154.0 (dialog wording since 0.142.5) | 0.85.1 | 1.18.21 | trust screen: cursor-agent 2026.09.23 |
 //!
 //! OSC 9;4 progress was not seen on any agent (no real turn measured).
 //! RPC permissions are configurable through
 //! [`AgentProfile::rpc_launch_with_options`].
+//! PTY model and effort flags come from Claude Code 2.1.327, Codex CLI 0.170.0
+//! and Pi 1.5.2. The argv construction tests use synthetic choices.
 //! Live permission checks separately cover Codex 0.169.0 config/read and OpenCode
 //! 1.18.25 subagent external-file reads with a local model peer. Cursor support is work
 //! in progress: 2026.11.13 has a `--force` login recording only, and authenticated
@@ -53,12 +56,72 @@ pub mod pi;
 use std::fmt;
 use std::sync::Arc;
 
-use super::AgentProfile;
+use super::compatibility::{Evidence, EvidenceKind};
+use super::{AgentProfile, ModelChoice};
+use crate::{Error, Result};
 pub use claude::ClaudeProfile;
 pub use codex::CodexProfile;
 pub use cursor::CursorProfile;
 pub use opencode::OpencodeProfile;
 pub use pi::{PiProfile, PiTrust};
+
+const MODEL_ARGV_EVIDENCE: Evidence = Evidence::new(
+    "PTY model and effort argv construction",
+    EvidenceKind::SyntheticFixture,
+    "tests/profiles_launch.rs",
+);
+
+/// Returns a fixed spelling from the profile's measured vocabulary.
+fn requested_effort(
+    profile: &str,
+    choice: &ModelChoice,
+    levels: &'static [&str],
+) -> Result<Option<&'static str>> {
+    let Some(request) = choice.effort.as_deref() else {
+        return Ok(None);
+    };
+    let level = levels
+        .iter()
+        .copied()
+        .find(|&level| level == request)
+        .ok_or_else(|| Error::Unsupported(format!("PTY reasoning effort for {profile}")))?;
+    Ok(Some(level))
+}
+
+/// Claude and Pi take separate model and effort words. A required operand can itself
+/// look like a model flag, e.g. `--system-prompt --model`.
+fn long_model_args(
+    profile: &str,
+    choice: &ModelChoice,
+    base_args: &[String],
+    effort_flag: &str,
+    levels: &'static [&str],
+    value_options: &[&str],
+    option_name: fn(&str) -> &str,
+) -> Result<Vec<String>> {
+    let effort = requested_effort(profile, choice, levels)?;
+    let mut base = base_args.iter().map(String::as_str);
+    while let Some(word) = base.next() {
+        let name = option_name(word);
+        if name == "--model" || (effort.is_some() && name == effort_flag) {
+            return Err(Error::InvalidInput(format!(
+                "{profile} launch already supplies {name}"
+            )));
+        }
+        if word == effort_flag || value_options.contains(&word) {
+            base.next().ok_or_else(|| {
+                Error::InvalidInput(format!(
+                    "{profile} launch needs a value for {word} before the model options"
+                ))
+            })?;
+        }
+    }
+    let mut args = vec!["--model".into(), choice.model.clone()];
+    if let Some(level) = effort {
+        args.extend([effort_flag.into(), level.into()]);
+    }
+    Ok(args)
+}
 
 /// One instance of each built-in profile, in this order: claude, opencode, pi, codex,
 /// cursor.

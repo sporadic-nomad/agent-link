@@ -51,6 +51,7 @@ fn config(profile: Option<Arc<dyn AgentProfile>>, policy: ForegroundPolicy) -> C
         profile_id: profile.as_ref().map_or_else(String::new, |p| p.id().into()),
         profile,
         launch_line: None,
+        has_model_choice: false,
         reset_command: None,
         shell: ShellKind::Posix,
         trust: TrustPolicy::default(),
@@ -64,6 +65,17 @@ fn config(profile: Option<Arc<dyn AgentProfile>>, policy: ForegroundPolicy) -> C
 
 fn state(profile: Option<Arc<dyn AgentProfile>>) -> CtlState {
     CtlState::new(Arc::new(config(profile, ForegroundPolicy::default())))
+}
+
+#[test]
+fn selected_model_marker_report_omits_the_echoed_command_and_banner() {
+    let st = CtlState::new(Arc::new(Config {
+        has_model_choice: true,
+        ..config(Some(Arc::new(Marker)), ForegroundPolicy::default())
+    }));
+    let report = st.marker_report(100, "$ agent --model private-model\nLoading private-model");
+    assert!(report.contains("marker") && report.contains("model choice supplied"));
+    assert!(!report.contains("private-model"));
 }
 
 /// A look at the terminal: the shell in front, or a program the policy does not name.

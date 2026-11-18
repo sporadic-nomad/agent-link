@@ -3,6 +3,7 @@
 
 use std::ffi::OsStr;
 use std::fmt;
+use std::path::Path;
 
 use super::Permissions;
 use crate::env::EnvPolicy;
@@ -12,16 +13,28 @@ use crate::{Error, Result};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ShellKind {
-    /// sh, bash, zsh: single-quote quoting. Not fish: it treats `\\` and `\'` as escapes
-    /// inside single quotes, so an argument holding a backslash would change.
+    /// sh, bash and zsh: POSIX single-quote quoting.
     Posix,
+    /// fish: single quotes with escapes for backslashes and apostrophes.
+    Fish,
     /// Windows `cmd.exe` (under ConPTY): double-quote quoting by the MSVC argv rules.
     Cmd,
 }
 
+// Canonical input must also accommodate the terminating newline. Use the POSIX
+// minimum (255 including the delimiter) on targets without a known larger PTY limit.
+const POSIX_COMMAND_BYTES: usize = if cfg!(any(target_os = "linux", target_os = "android")) {
+    4095
+} else if cfg!(target_vendor = "apple") {
+    1023
+} else {
+    254
+};
+const CMD_COMMAND_UNITS: usize = 8191;
+
 impl ShellKind {
-    /// The kind of the crate's default shell on this platform: [`Cmd`](Self::Cmd) on Windows
-    /// (`%COMSPEC%`, else `cmd.exe`), [`Posix`](Self::Posix) elsewhere.
+    /// The platform's default quoting convention, without looking up the user's shell:
+    /// [`Cmd`](Self::Cmd) on Windows and [`Posix`](Self::Posix) elsewhere.
     pub fn native() -> Self {
         if cfg!(windows) {
             ShellKind::Cmd
@@ -30,11 +43,19 @@ impl ShellKind {
         }
     }
 
-    /// What ends a typed line: `"\n"` for POSIX shells, `"\r"` for cmd.exe under ConPTY —
+    pub(super) fn for_unix_shell(program: &Path) -> Self {
+        if program.file_name() == Some(OsStr::new("fish")) {
+            Self::Fish
+        } else {
+            Self::Posix
+        }
+    }
+
+    /// What ends a typed line: `"\n"` for Unix shells, `"\r"` for cmd.exe under ConPTY —
     /// the byte a real Enter produces there; a bare LF does not complete a cmd line.
     pub fn line_terminator(self) -> &'static str {
         match self {
-            ShellKind::Posix => "\n",
+            ShellKind::Posix | ShellKind::Fish => "\n",
             ShellKind::Cmd => "\r",
         }
     }
@@ -44,7 +65,7 @@ impl ShellKind {
     /// there (an unsubmitted paste, a draft) never runs as part of it. `None` when the crate
     /// knows no such keys.
     ///
-    /// - `Posix`: a space, then Ctrl-U (`\x15`) once. One press empties a single line in
+    /// - `Posix` and `Fish`: a space, then Ctrl-U (`\x15`) once. One press empties a single line in
     ///   readline (bash: `unix-line-discard`), zsh (`kill-whole-line`), fish
     ///   (`backward-kill-line`) and a terminal in canonical mode (sh/dash without a line
     ///   editor: the tty's kill character); the space gives readline something to kill (on
@@ -57,54 +78,73 @@ impl ShellKind {
     ///   character and clear nothing.
     pub fn clear_line(self) -> Option<&'static str> {
         match self {
-            ShellKind::Posix => Some(" \u{15}"),
+            ShellKind::Posix | ShellKind::Fish => Some(" \u{15}"),
             ShellKind::Cmd => None,
         }
     }
 
     /// `arg` as one word of a command line typed into this shell.
     ///
-    /// - Both kinds: an arg made only of `A-Z a-z 0-9 _ . / : = @ % + , -`, not starting
-    ///   with `=` (zsh expands `=cmd`), stays unquoted.
+    /// - An arg made only of `A-Z a-z 0-9 _ . / : = @ % + , -`, not starting
+    ///   with `=` (zsh expands `=cmd`), stays unquoted unless fish can expand it as a job reference.
     ///   An arg with a control character (newline, CR, tab, ESC, NUL, …) is refused
     ///   ([`Error::InvalidInput`]): a line editor would act on it (submit, complete, erase).
     /// - `Posix`: anything else is single-quoted, `'` written as `'\''`.
+    /// - `Fish`: anything else is single-quoted, with backslashes and apostrophes escaped.
     /// - `Cmd`: `%`, `^`, `&`, `|`, `<`, `>` and `!` are refused — cmd.exe expands or
     ///   interprets them even inside quotes on an interactive line. Anything else is
     ///   double-quoted: `"` becomes `\"`, backslashes before a `"` or the closing quote are
     ///   doubled.
     pub fn quote(self, arg: &str) -> Result<String> {
-        if arg.chars().any(char::is_control) {
-            return Err(Error::InvalidInput(format!(
-                "launch argument {arg:?} contains a control character; a typed command line cannot carry it"
-            )));
+        self.validate_word(arg)?;
+        if is_plain(arg) && !(self == Self::Fish && arg.starts_with('%')) {
+            return Ok(arg.to_owned());
         }
-        match self {
-            ShellKind::Posix if is_plain(arg) => Ok(arg.to_string()),
-            ShellKind::Posix => Ok(format!("'{}'", arg.replace('\'', r"'\''"))),
-            ShellKind::Cmd => {
-                if let Some(c) = arg.chars().find(|c| CMD_SPECIAL.contains(c)) {
-                    return Err(Error::InvalidInput(format!(
-                        "launch argument {arg:?} contains {c:?}, which cmd.exe interprets on a command line"
-                    )));
-                }
-                if is_plain(arg) {
-                    Ok(arg.to_string())
-                } else {
-                    Ok(msvc_quote(arg))
-                }
+        Ok(match self {
+            ShellKind::Posix => format!("'{}'", arg.replace('\'', r"'\''")),
+            ShellKind::Fish => format!("'{}'", arg.replace('\\', r"\\").replace('\'', r"\'")),
+            ShellKind::Cmd => msvc_quote(arg),
+        })
+    }
+
+    fn validate_word(self, arg: &str) -> Result<()> {
+        if arg.chars().any(char::is_control) {
+            return Err(Error::InvalidInput(
+                "a typed launch argument cannot carry a control character".into(),
+            ));
+        }
+        if self == ShellKind::Cmd {
+            if let Some(c) = arg.chars().find(|c| CMD_SPECIAL.contains(c)) {
+                return Err(Error::InvalidInput(format!(
+                    "cmd.exe interprets {c:?} in a typed launch argument"
+                )));
             }
+        }
+        Ok(())
+    }
+
+    /// The quote-expanded command as the shell receives it after line clearing and
+    /// before Enter. The PTY queue separately accounts for every byte of the write.
+    fn validate_command_length(self, line: &str) -> Result<()> {
+        match self {
+            Self::Posix | Self::Fish if line.len() > POSIX_COMMAND_BYTES => {
+                Err(Error::InvalidInput(format!(
+                    "quoted launch command exceeds the canonical PTY limit of {POSIX_COMMAND_BYTES} bytes before Enter"
+                )))
+            }
+            Self::Cmd if line.encode_utf16().count() > CMD_COMMAND_UNITS => {
+                Err(Error::InvalidInput(format!(
+                    "quoted launch command exceeds the cmd.exe limit of {CMD_COMMAND_UNITS} UTF-16 code units"
+                )))
+            }
+            _ => Ok(()),
         }
     }
 }
 
 /// `words` as one command line for a one-shot `<shell> -c` run (an RPC launch, an install
-/// probe), `shell` being a unix shell path such as `$SHELL`. Each word is POSIX-quoted
-/// ([`ShellKind::quote`]: a plain word stays bare, a control character is refused), except
-/// under fish for a word holding a backslash: fish reads `\\` and `\'` as escapes inside
-/// single quotes, so there that word is single-quoted with both escaped (the POSIX form would
-/// change it, or leave the quote open). Without a backslash both shells read the POSIX form
-/// alike.
+/// probe), `shell` being a unix shell path such as `$SHELL`. Each word is quoted for
+/// that shell (see [`ShellKind::quote`]).
 // Used by the unix `rpc` and `probe` paths only.
 #[cfg_attr(
     not(all(unix, any(feature = "rpc", feature = "probe"))),
@@ -114,17 +154,10 @@ pub(crate) fn login_shell_command<'a>(
     shell: &str,
     words: impl IntoIterator<Item = &'a str>,
 ) -> Result<String> {
-    let fish = crate::shell::shell_base(shell) == "fish";
+    let shell = ShellKind::for_unix_shell(Path::new(shell));
     let quoted = words
         .into_iter()
-        .map(|word| {
-            let posix = ShellKind::Posix.quote(word)?;
-            Ok(if fish && word.contains('\\') {
-                format!("'{}'", word.replace('\\', r"\\").replace('\'', r"\'"))
-            } else {
-                posix
-            })
-        })
+        .map(|word| shell.quote(word))
         .collect::<Result<Vec<_>>>()?;
     Ok(quoted.join(" "))
 }
@@ -133,7 +166,7 @@ pub(crate) fn login_shell_command<'a>(
 /// expansion on, which a user can enable in the registry).
 const CMD_SPECIAL: &[char] = &['%', '^', '&', '|', '<', '>', '!'];
 
-/// Needs no quoting in either shell.
+/// Uses only characters that can be left bare, subject to shell-specific expansion.
 fn is_plain(arg: &str) -> bool {
     !arg.is_empty()
         && !arg.starts_with('=')
@@ -201,6 +234,52 @@ pub(crate) fn merge_launch_env(
     }
     for (key, value) in overrides {
         policy.set(key, value);
+    }
+}
+
+/// The model and optional reasoning effort requested for a profile-built PTY shell launch.
+/// Model IDs may contain spaces, brackets and provider-specific punctuation. The profile
+/// defines its effort labels. The CLI determines availability for the account at runtime.
+/// [`AgentTerminal::spawn`](super::AgentTerminal::spawn) validates both identifiers
+/// before calling the profile. Each must be nonblank, must not start with `-`, and
+/// must be representable by [`ShellKind::quote`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct ModelChoice {
+    /// Model name or alias, passed as one argument by the supported built-in profiles.
+    pub model: String,
+    /// Profile-specific effort label. `None` omits a separate effort argument.
+    pub effort: Option<String>,
+}
+
+impl ModelChoice {
+    /// Requests a model without a separate effort argument. The CLI interprets the
+    /// model string. For example, Pi can select a thinking level from a `:high` suffix.
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            effort: None,
+        }
+    }
+
+    /// Also requests this effort. Spawn fails if the profile cannot map the whole choice.
+    #[must_use]
+    pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
+        self.effort = Some(effort.into());
+        self
+    }
+
+    pub(super) fn validate(&self, shell: ShellKind) -> Result<()> {
+        for id in std::iter::once(&self.model).chain(&self.effort) {
+            if id.trim().is_empty() || id.starts_with('-') {
+                return Err(Error::InvalidInput(
+                    "model and effort identifiers must be nonblank and cannot start with '-'"
+                        .into(),
+                ));
+            }
+            shell.validate_word(id)?;
+        }
+        Ok(())
     }
 }
 
@@ -302,6 +381,46 @@ impl LaunchPlan {
         Ok(line)
     }
 
+    pub(super) fn append_model_args(&mut self, args: Vec<String>) -> Result<()> {
+        if self.args.iter().any(|arg| arg == "--") {
+            return Err(Error::InvalidInput(
+                "cannot append model arguments after an end-of-options marker".into(),
+            ));
+        }
+        if args.is_empty() {
+            return Err(Error::InvalidInput(
+                "profile returned no arguments for a model choice".into(),
+            ));
+        }
+        self.args.extend(args);
+        Ok(())
+    }
+
+    /// The controller stores the terminated line and prepends the shell's clear keys
+    /// when writing it. A selected command must fit the shell input line and, with
+    /// those keys and the terminator, one PTY write.
+    pub(super) fn launch_line(
+        &self,
+        shell: ShellKind,
+        max_write_bytes: Option<usize>,
+    ) -> Result<String> {
+        let mut line = self.command_line(shell)?;
+        let terminator = shell.line_terminator();
+        if let Some(limit) = max_write_bytes {
+            let size = line
+                .len()
+                .checked_add(terminator.len())
+                .and_then(|n| n.checked_add(shell.clear_line().unwrap_or_default().len()))
+                .unwrap_or(usize::MAX);
+            if size > limit {
+                return Err(Error::InputTooLarge { size, limit });
+            }
+            shell.validate_command_length(&line)?;
+        }
+        line.push_str(terminator);
+        Ok(line)
+    }
+
     /// Adds the plan's env to `policy`: each [`env_defaults`](Self::env_defaults) entry
     /// unless `policy` already sets the key ([`EnvPolicy::sets`]), then every
     /// [`env`](Self::env) entry (overriding). A key the policy removes stays removed.
@@ -339,8 +458,106 @@ mod tests {
     }
 
     #[test]
-    fn lines_end_with_lf_on_posix_and_cr_in_cmd() {
+    fn model_and_effort_must_be_identifiers_the_shell_can_carry() {
+        for shell in [ShellKind::Posix, ShellKind::Fish, ShellKind::Cmd] {
+            for id in [
+                "",
+                " \u{2003}",
+                "-m",
+                "--high",
+                "foo\0bar",
+                "a\rb",
+                "a\u{9b}b",
+            ] {
+                for choice in [
+                    ModelChoice::new(id),
+                    ModelChoice::new("model").with_effort(id),
+                ] {
+                    assert!(
+                        matches!(choice.validate(shell), Err(Error::InvalidInput(_))),
+                        "{id:?}"
+                    );
+                }
+            }
+            ModelChoice::new("provider/model:tag [1m]")
+                .validate(shell)
+                .unwrap();
+        }
+        for id in ["%PATH%", "a!b", "a&b"] {
+            let choice = ModelChoice::new(id);
+            choice.validate(ShellKind::Posix).unwrap();
+            assert!(matches!(
+                choice.validate(ShellKind::Cmd),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn a_model_mapping_needs_words_and_an_open_option_list() {
+        let mut base = plan("agent", &["--policy", "custom"]);
+        assert!(matches!(
+            base.append_model_args(Vec::new()),
+            Err(Error::InvalidInput(_))
+        ));
+        base.args.push("--".into());
+        assert!(matches!(
+            base.append_model_args(vec!["--model".into(), "opus[1m]".into()]),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(base.args, ["--policy", "custom", "--"]);
+    }
+
+    #[test]
+    fn selected_launch_budget_covers_encoded_bytes_clear_keys_and_enter() {
+        let p = plan("agent", &["--model", "it's π\\"]);
+        for (shell, line, keys) in [
+            (
+                ShellKind::Posix,
+                "agent --model 'it'\\''s π\\'\n",
+                " \u{15}",
+            ),
+            (ShellKind::Fish, "agent --model 'it\\'s π\\\\'\n", " \u{15}"),
+            (ShellKind::Cmd, "agent --model \"it's π\\\\\"\r", ""),
+        ] {
+            let bytes = keys.len() + line.len();
+            assert_eq!(p.launch_line(shell, Some(bytes)).unwrap(), line);
+            assert!(matches!(
+                p.launch_line(shell, Some(bytes - 1)),
+                Err(Error::InputTooLarge { size, limit }) if size == bytes && limit == bytes - 1
+            ));
+        }
+    }
+
+    #[test]
+    fn selected_launch_checks_the_quoted_shell_line_even_when_the_write_fits() {
+        for (shell, limit) in [
+            (ShellKind::Posix, POSIX_COMMAND_BYTES),
+            (ShellKind::Fish, POSIX_COMMAND_BYTES),
+            (ShellKind::Cmd, 8191),
+        ] {
+            // The base argument needs quoting. The supplementary character costs
+            // four UTF-8 bytes on a POSIX tty and two UTF-16 units in cmd.exe.
+            let mut p = plan("agent", &[" a🦀", "--model", "chosen", "--effort", "high"]);
+            let base = p.command_line(shell).unwrap();
+            let size = match shell {
+                ShellKind::Posix | ShellKind::Fish => base.len(),
+                ShellKind::Cmd => base.encode_utf16().count(),
+            };
+            p.args[0].push_str(&"x".repeat(limit - size));
+            assert!(p.launch_line(shell, Some(1024 * 1024)).is_ok());
+            p.args[0].push('x');
+            assert!(matches!(
+                p.launch_line(shell, Some(1024 * 1024)),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn lines_end_with_lf_on_unix_and_cr_in_cmd() {
         assert_eq!(ShellKind::Posix.line_terminator(), "\n");
+        assert_eq!(ShellKind::Fish.line_terminator(), "\n");
         assert_eq!(ShellKind::Cmd.line_terminator(), "\r");
         let native = if cfg!(windows) {
             ShellKind::Cmd
@@ -353,6 +570,7 @@ mod tests {
     #[test]
     fn a_posix_line_is_cleared_with_one_ctrl_u_and_cmd_has_no_clear() {
         assert_eq!(ShellKind::Posix.clear_line(), Some(" \u{15}"));
+        assert_eq!(ShellKind::Fish.clear_line(), Some(" \u{15}"));
         assert_eq!(ShellKind::Cmd.clear_line(), None);
     }
 
@@ -402,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn both_refuse_control_characters() {
+    fn all_shell_kinds_refuse_control_characters() {
         for arg in [
             "a\nb",
             "a\rb",
@@ -412,7 +630,7 @@ mod tests {
             "\u{7f}",
             "\u{9b}",
         ] {
-            for shell in [ShellKind::Posix, ShellKind::Cmd] {
+            for shell in [ShellKind::Posix, ShellKind::Fish, ShellKind::Cmd] {
                 let err = shell.quote(arg).unwrap_err();
                 assert!(matches!(err, Error::InvalidInput(_)), "{shell:?} {arg:?}");
             }
@@ -420,15 +638,15 @@ mod tests {
     }
 
     #[test]
-    fn a_login_shell_command_quotes_each_word_and_escapes_backslashes_only_for_fish() {
-        let words = ["my agent", "--flag", r"a\b", "it's", ""];
+    fn a_login_shell_command_quotes_each_word_for_the_named_shell() {
+        let words = ["my agent", "--flag", r"a\b", "it's", "", "%self"];
         assert_eq!(
             login_shell_command("/bin/zsh", words).unwrap(),
-            r"'my agent' --flag 'a\b' 'it'\''s' ''"
+            r"'my agent' --flag 'a\b' 'it'\''s' '' %self"
         );
         assert_eq!(
             login_shell_command("/opt/homebrew/bin/fish", words).unwrap(),
-            r"'my agent' --flag 'a\\b' 'it'\''s' ''"
+            r"'my agent' --flag 'a\\b' 'it\'s' '' '%self'"
         );
         assert_eq!(
             login_shell_command("/bin/sh", ["claude", "--version"]).unwrap(),

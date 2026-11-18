@@ -8,6 +8,12 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `AgentSpec::model` and `agent::ModelChoice` select a model and optional reasoning
+  effort for profile-built PTY shell launches. Claude, Codex and Pi map the selection
+  once for the lifetime of the shell. Custom profiles can implement
+  `AgentProfile::model_args`. Spawn rejects an unsupported choice or a quoted
+  command that exceeds the shell's line limit or the configured PTY write budget.
+  Pi accepts equals-form extension flags alongside the built-in model and thinking options.
 - The default `agent` feature checks `AgentProfile::question_dialog` before pasting,
   while waiting for the paste to appear, and before each Enter. A matching question
   stops delivery with `AbortReason::DialogBlocking` (`dialog_blocking`). Inspect the
@@ -25,6 +31,17 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   Ambiguous or unavailable reset evidence yields `SubmitUnverified`. Either reset
   outcome withholds the follow-up. Inspect the session before retrying an unverified
   reset because Enter may already have reached the CLI.
+
+### Changed
+
+- For the next 0.x minor release, exhaustive `AgentSpec` literals must add
+  `model: None` to keep the previous launch behavior. `AgentSpec::new`,
+  `AgentSpec::default` and struct update syntax inherit that default.
+
+### Fixed
+
+- Profile-built PTY launches use fish quoting when the resolved Unix shell is named
+  `fish`, preserving literal backslashes and apostrophes in model IDs and other arguments.
 
 ## [0.2.0] — 2026-11-17
 

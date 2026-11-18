@@ -172,6 +172,16 @@ not add pre-trust flags or answer dialogs automatically.
 To configure restrictions, set `agent.permissions` to `Permissions::AgentDefault` for
 the CLI's own policy, or `Permissions::Custom` for replacement arguments and environment
 values. See [permission configuration](docs/permissions-and-probes.md#permission-defaults-permissions).
+
+For a Claude, Codex, or Pi shell launch, set `agent.model` to
+`Some(ModelChoice::new("model-id").with_effort("high"))`. Omit `with_effort` to pass
+the model string without a separate effort argument. The CLI interprets that string.
+Pi accepts `--model=…` and `--thinking=…` extension flags alongside this selection.
+The default is `None`. Spawn rejects unsupported choices, choices on a bare shell or
+Direct child, and selected commands that exceed the shell line or PTY write limit.
+Shell launches use fish quoting when the resolved Unix shell is named `fish`.
+Each relaunch uses the same arguments. See [PTY model selection and supported levels](docs/agents-and-delivery.md#pty-model-and-reasoning-effort).
+
 Any built-in id is accepted (`claude`, `opencode`, `pi`, `codex`, `cursor`), but verified
 submission requires a readable composer (see *Agent CLIs*). Launch, then wait
 until the controller reports `Ready` ([`examples/agent_send.rs`](examples/agent_send.rs)):

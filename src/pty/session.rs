@@ -460,6 +460,11 @@ impl std::fmt::Debug for Terminal {
 
 #[allow(dead_code)] // the agent controller and its delivery jobs use a subset each
 impl TerminalHandle {
+    #[cfg(all(test, unix, feature = "agent"))]
+    pub(crate) fn turns_ended(&self) -> bool {
+        self.inner.bus.turns_ended.load(Ordering::Acquire)
+    }
+
     pub(crate) fn id(&self) -> SessionId {
         self.inner.id
     }
@@ -637,7 +642,12 @@ impl Inner {
     }
 
     fn try_wait(&self) -> Option<ExitInfo> {
-        lock(&self.child).try_wait()
+        let exit = lock(&self.child).try_wait();
+        #[cfg(all(test, unix, feature = "agent"))]
+        if exit.is_some() {
+            self.bus.turns_ended.store(true, Ordering::Release);
+        }
+        exit
     }
 
     /// Idempotent; the order matters:

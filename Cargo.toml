@@ -106,6 +106,10 @@ serde_json = "1"
 # the library alone too). 1.38: `mpsc::Receiver::max_capacity`.
 tokio = { version = "1.38", features = ["macros", "rt", "time"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+# Private turn-reader pilot: descriptor-relative, no-follow file lookup. MSRV 1.63.
+rustix = { version = "1", features = ["fs"] }
+
 # Spike tool and fixture recorder: runs a command in a PTY, records the stream, logs the
 # terminal signals and writes a fixture set. Its unit tests cover the payload parser,
 # the event escaping, the sanitiser, the identity env stripping, the stdin reply filter

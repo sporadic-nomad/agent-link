@@ -3,10 +3,11 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use agent_link::agent::{
-    AgentProfile, AgentSpec, AgentTerminal, Dialog, LaunchPlan, Permissions, RpcLaunch, ShellKind,
-    TrustPolicy,
+    AgentProfile, AgentSpec, AgentTerminal, Dialog, LaunchPlan, ModelChoice, Permissions,
+    RpcLaunch, ShellKind, TrustPolicy,
 };
 use agent_link::env::EnvPolicy;
 use agent_link::rpc::{RpcChild, RpcEvent, RpcSpawnSpec};
@@ -119,7 +120,14 @@ fn refused_rpc_spawn_releases_temporary_configuration() {
     assert!(!path.parent().unwrap().exists());
 }
 
-struct ToolProfile;
+#[derive(Default)]
+struct ToolProfile {
+    launches: AtomicUsize,
+    mappings: AtomicUsize,
+    backend_calls: AtomicUsize,
+    extra_model_arg: Option<&'static str>,
+}
+
 impl AgentProfile for ToolProfile {
     fn id(&self) -> &str {
         "tool-peer"
@@ -131,6 +139,7 @@ impl AgentProfile for ToolProfile {
         false
     }
     fn mcp_backend(&self, _: ToolTransport) -> Option<McpBackend> {
+        self.backend_calls.fetch_add(1, Ordering::Relaxed);
         Some(McpBackend::Claude)
     }
     fn launch(
@@ -140,9 +149,29 @@ impl AgentProfile for ToolProfile {
         _: &Path,
         _: ShellKind,
     ) -> LaunchPlan {
+        self.launches.fetch_add(1, Ordering::Relaxed);
         let mut plan = LaunchPlan::new(common::fake_agent_path().to_str().unwrap());
         plan.args.push("--tool-launch-peer".into());
         plan.with_permissions(permissions, &["--synthetic-permission-flag"], &[])
+    }
+    fn model_args(
+        &self,
+        choice: &ModelChoice,
+        base_args: &[String],
+    ) -> agent_link::Result<Vec<String>> {
+        self.mappings.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(
+            base_args,
+            ["--tool-launch-peer", "--synthetic-permission-flag"]
+        );
+        let mut args = vec!["--model".into(), choice.model.clone()];
+        if let Some(effort) = &choice.effort {
+            args.extend(["--effort".into(), effort.clone()]);
+        }
+        if let Some(extra) = self.extra_model_arg {
+            args.push(extra.into());
+        }
+        Ok(args)
     }
 }
 
@@ -163,7 +192,7 @@ fn malformed_mcp_urls_are_refused_before_pty_spawn() {
             PtySize { rows: 24, cols: 80 },
         );
         spec.env = isolated(home.path());
-        let mut agent = AgentSpec::new(Arc::new(ToolProfile));
+        let mut agent = AgentSpec::new(Arc::new(ToolProfile::default()));
         agent.trace = Some(false);
         let result = {
             let _guard = common::spawn_lock();
@@ -217,7 +246,7 @@ fn direct_pty_retains_attachment_without_overwriting_explicit_arguments() {
         },
     );
     spec.env = isolated(home.path());
-    let mut agent = AgentSpec::new(Arc::new(ToolProfile));
+    let mut agent = AgentSpec::new(Arc::new(ToolProfile::default()));
     agent.trace = Some(false);
     let (terminal, events) = {
         let _guard = common::spawn_lock();
@@ -244,26 +273,151 @@ fn direct_pty_retains_attachment_without_overwriting_explicit_arguments() {
 #[test]
 fn shell_pty_applies_tools_to_the_normal_profile_launch() {
     let home = tempfile::tempdir().unwrap();
-    let spec = common::sh_spec(home.path());
-    let mut agent = AgentSpec::new(Arc::new(ToolProfile));
-    agent.trace = Some(false);
-    let (terminal, events) = {
-        let _guard = common::spawn_lock();
-        AgentTerminal::spawn_with_tools(spec, agent, &tools()).unwrap()
+    for model in [
+        None,
+        Some(ModelChoice::new("tool peer [1m]").with_effort("high")),
+    ] {
+        let spec = common::sh_spec(home.path());
+        let selected = model.is_some();
+        let profile = Arc::new(ToolProfile::default());
+        let agent = AgentSpec {
+            model,
+            trace: Some(false),
+            ..AgentSpec::new(profile.clone())
+        };
+        let (terminal, events) = {
+            let _guard = common::spawn_lock();
+            AgentTerminal::spawn_with_tools(spec, agent, &tools()).unwrap()
+        };
+        terminal.launch().unwrap();
+        let report = read_pty(&events);
+        check_report(&report);
+        let program = common::fake_agent_path();
+        let mut expected = vec![
+            program.to_str().unwrap(),
+            "--tool-launch-peer",
+            "--synthetic-permission-flag",
+        ];
+        if selected {
+            expected.extend(["--model", "tool peer [1m]", "--effort", "high"]);
+        }
+        let path = Path::new(report["config_path"].as_str().unwrap());
+        expected.extend(["--mcp-config", path.to_str().unwrap()]);
+        assert_eq!(report["args"], serde_json::json!(expected));
+        assert_eq!(profile.launches.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            profile.mappings.load(Ordering::Relaxed),
+            usize::from(selected)
+        );
+        terminal.terminal().write(b"inspect\n").unwrap();
+        check_report(&read_pty(&events));
+        assert!(path.exists());
+        drop(terminal);
+        assert!(!path.parent().unwrap().exists());
+    }
+}
+
+fn tool_model_error(spec: SpawnSpec, profile: &Arc<ToolProfile>, model: &str) -> Error {
+    let agent = AgentSpec {
+        model: Some(ModelChoice::new(model)),
+        ..AgentSpec::new(profile.clone())
     };
-    terminal.launch().unwrap();
-    let report = read_pty(&events);
-    check_report(&report);
-    assert!(
-        report["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|a| a == "--synthetic-permission-flag")
+    let _guard = common::spawn_lock();
+    AgentTerminal::spawn_with_tools(spec, agent, &tools()).unwrap_err()
+}
+
+#[test]
+fn invalid_model_requests_and_input_limits_precede_tool_preparation() {
+    let home = tempfile::tempdir().unwrap();
+    let spec = SpawnSpec::shell(home.path(), PtySize { rows: 24, cols: 80 });
+    let profile = Arc::new(ToolProfile::default());
+    assert!(matches!(
+        tool_model_error(spec.clone(), &profile, "bad\nmodel"),
+        Error::InvalidInput(_)
+    ));
+    let direct = SpawnSpec::direct(
+        common::fake_agent_path(),
+        ["--tool-launch-peer"],
+        home.path(),
+        spec.size,
     );
-    let path = PathBuf::from(report["config_path"].as_str().unwrap());
-    drop(terminal);
-    assert!(!path.parent().unwrap().exists());
+    assert!(matches!(
+        tool_model_error(direct, &profile, "chosen"),
+        Error::InvalidInput(_)
+    ));
+    let mut invalid = spec.clone();
+    invalid.input_limits.max_pending_chunks = 0;
+    assert!(matches!(
+        tool_model_error(invalid, &profile, "chosen"),
+        Error::InvalidInput(_)
+    ));
+    assert_eq!(profile.backend_calls.load(Ordering::Relaxed), 0);
+
+    let unquotable = Arc::new(ToolProfile {
+        extra_model_arg: Some("bad\nword"),
+        ..ToolProfile::default()
+    });
+    assert!(matches!(
+        tool_model_error(spec, &unquotable, "chosen"),
+        Error::InvalidInput(_)
+    ));
+    assert_eq!(unquotable.backend_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn selected_launch_checks_write_size_before_and_after_tools_extend_the_argv() {
+    let home = tempfile::tempdir().unwrap();
+    let mut spec = SpawnSpec::shell(home.path(), PtySize { rows: 24, cols: 80 });
+    let profile = Arc::new(ToolProfile::default());
+    let shell = ShellKind::native();
+    let program = shell
+        .quote(common::fake_agent_path().to_str().unwrap())
+        .unwrap();
+    let model = shell.quote("two words").unwrap();
+    let before_tools = format!(
+        "{}{program} --tool-launch-peer --synthetic-permission-flag --model {model}{}",
+        shell.clear_line().unwrap_or_default(),
+        shell.line_terminator(),
+    )
+    .len();
+    spec.input_limits.max_write_bytes = before_tools - 1;
+    let error = tool_model_error(spec.clone(), &profile, "two words");
+    assert!(
+        matches!(
+            error,
+            Error::InputTooLarge { size, limit } if size == before_tools && limit == before_tools - 1
+        ),
+        "{error}"
+    );
+    assert_eq!(profile.backend_calls.load(Ordering::Relaxed), 0);
+    spec.input_limits.max_write_bytes = before_tools;
+    let error = tool_model_error(spec, &profile, "two words");
+    assert!(
+        matches!(
+            error,
+            Error::InputTooLarge { size, limit } if size > before_tools && limit == before_tools
+        ),
+        "{error}"
+    );
+    assert_eq!(profile.backend_calls.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn tool_conflict_checks_see_the_model_hooks_arguments() {
+    let home = tempfile::tempdir().unwrap();
+    let spec = SpawnSpec::shell(home.path(), PtySize { rows: 24, cols: 80 });
+    let profile = Arc::new(ToolProfile {
+        extra_model_arg: Some("--mcp-config=from-profile"),
+        ..ToolProfile::default()
+    });
+    let error = tool_model_error(spec, &profile, "chosen");
+    assert!(
+        matches!(
+            &error,
+            Error::InvalidInput(message) if message.contains("already configures Claude MCP")
+        ),
+        "{error}"
+    );
 }
 
 #[cfg(feature = "codex")]

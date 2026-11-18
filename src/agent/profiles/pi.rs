@@ -19,13 +19,39 @@ use crate::agent::detect::{
     PENDING_SCAN_ROWS, composer_holds, from_last, has_all, has_any, selected_option,
 };
 use crate::agent::{
-    AgentProfile, Dialog, DialogKind, LaunchPlan, Permissions, RpcLaunch, RpcLaunchOptions,
-    ShellKind, SignalHints, TrustKey, TrustPolicy, Unlock,
+    AgentProfile, Dialog, DialogKind, LaunchPlan, ModelChoice, Permissions, RpcLaunch,
+    RpcLaunchOptions, ShellKind, SignalHints, TrustKey, TrustPolicy, Unlock,
 };
 use crate::screen::{ScreenText, cached, normalize};
 
 /// pi's documented JSONL stdio mode.
 pub const PI_RPC_FLAGS: &[&str] = &["--mode", "rpc"];
+
+// Pi 1.5.2 parseArgs takes the following word even when it looks like an option.
+// Other flags, such as --list-models and --mode, leave dash-leading words in place.
+const VALUE_OPTIONS: &[&str] = &[
+    "--provider",
+    "--api-key",
+    "--system-prompt",
+    "--append-system-prompt",
+    "--name",
+    "-n",
+    "--session",
+    "--session-id",
+    "--fork",
+    "--session-dir",
+    "--models",
+    "--tools",
+    "-t",
+    "--exclude-tools",
+    "-xt",
+    "--export",
+    "--extension",
+    "-e",
+    "--skill",
+    "--prompt-template",
+    "--theme",
+];
 
 /// Which answer the pi profile gives its project-trust dialog.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -136,13 +162,19 @@ impl AgentProfile for PiProfile {
             pty: Support::Supported,
             rpc_launch: Support::Supported,
             login_check: Support::Unsupported,
-            evidence: &[Evidence {
-                operation: "ready screen recognition",
-                kind: EvidenceKind::CapturedTerminal,
-                cli_version: Some("0.85.1"),
-                platform: None,
-                source: "tests/fixtures/pi-0.85.1-ready.bin",
-            }],
+            evidence: &[
+                Evidence {
+                    operation: "ready screen recognition",
+                    kind: EvidenceKind::CapturedTerminal,
+                    cli_version: Some("0.85.1"),
+                    platform: None,
+                    source: "tests/fixtures/pi-0.85.1-ready.bin",
+                },
+                Evidence {
+                    cli_version: Some("1.5.2"),
+                    ..super::MODEL_ARGV_EVIDENCE
+                },
+            ],
         }
     }
 
@@ -213,6 +245,19 @@ impl AgentProfile for PiProfile {
             plan.args.push("--approve".into());
         }
         plan
+    }
+
+    fn model_args(&self, choice: &ModelChoice, base_args: &[String]) -> crate::Result<Vec<String>> {
+        super::long_model_args(
+            self.id(),
+            choice,
+            base_args,
+            "--thinking",
+            &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+            VALUE_OPTIONS,
+            // Pi reserves the equals forms for extension flags.
+            |word| word,
+        )
     }
 
     fn reset_command(&self) -> Option<&'static str> {

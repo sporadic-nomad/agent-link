@@ -7,7 +7,7 @@ use std::fmt;
 use std::path::Path;
 
 use super::launch::{env_keys, merge_launch_env};
-use super::{LaunchPlan, Permissions, ShellKind, TrustPolicy, detect};
+use super::{LaunchPlan, ModelChoice, Permissions, ShellKind, TrustPolicy, detect};
 use crate::env::EnvPolicy;
 use crate::identity::KnownTerminal;
 use crate::{Error, Result};
@@ -399,6 +399,23 @@ pub trait AgentProfile: Send + Sync {
         let _ = (trust, cwd, shell);
         let program = self.launchers().first().copied().unwrap_or(self.id());
         LaunchPlan::new(program).with_permissions(perms, &[], &[])
+    }
+
+    /// Maps the whole choice to additional, unquoted argv words for a PTY shell launch.
+    /// Spawn validates the identifiers and calls this hook once after [`launch`](Self::launch),
+    /// before tool attachment or child creation. The same line is used on every relaunch.
+    ///
+    /// Inspect `base_args` for the profile's own model options, aliases and config
+    /// overrides. Return [`Error::InvalidInput`] for a duplicate setting of a requested
+    /// field and [`Error::Unsupported`] if either the model or the requested effort
+    /// cannot be mapped. A successful mapping must contain at least one word. Spawn
+    /// reserves a standalone `--` in `base_args` as the end of options.
+    /// The default returns [`Error::Unsupported`] for every explicit choice.
+    fn model_args(&self, _choice: &ModelChoice, _base_args: &[String]) -> Result<Vec<String>> {
+        Err(Error::Unsupported(format!(
+            "PTY model selection for profile {}",
+            self.id()
+        )))
     }
 
     /// The command typed into the composer to start a fresh conversation (`/clear`,

@@ -18,7 +18,7 @@ use regex::Regex;
 use crate::KnownTerminal;
 use crate::agent::detect::{from_last, has_all, has_any, pending_input_where, steer_two};
 use crate::agent::{
-    AgentProfile, Dialog, DialogKind, LaunchPlan, LoginCheck, Permissions, RpcLaunch,
+    AgentProfile, Dialog, DialogKind, LaunchPlan, LoginCheck, ModelChoice, Permissions, RpcLaunch,
     RpcLaunchOptions, ShellKind, SignalHints, TrustPolicy, Unlock,
 };
 use crate::screen::{cached, normalize};
@@ -39,6 +39,45 @@ pub const BYPASS_WARNING_VERIFIED: bool = true;
 /// a gate that cannot recognise and steer that screen would let the next programmatic Enter
 /// quit claude, so the flag goes only with a profile that accepts the warning.
 const BYPASS_ARGS: &[&str] = &["--permission-mode", "bypassPermissions"];
+
+// Claude Code 2.1.327 --help. These options consume at least one operand, even
+// if the operand begins with a dash. Further variadic operands stop at an option.
+const VALUE_OPTIONS: &[&str] = &[
+    "--add-dir",
+    "--agent",
+    "--agents",
+    "--allowedTools",
+    "--allowed-tools",
+    "--append-system-prompt",
+    "--append-system-prompt-file",
+    "--autocompact",
+    "--betas",
+    "--debug-file",
+    "--disallowedTools",
+    "--disallowed-tools",
+    "--environment",
+    "--fallback-model",
+    "--file",
+    "--input-format",
+    "--json-schema",
+    "--max-budget-usd",
+    "--mcp-config",
+    "--name",
+    "-n",
+    "--output-format",
+    "--permission-mode",
+    "--permission-prompts",
+    "--plugin-dir",
+    "--plugin-url",
+    "--remote-control-session-name-prefix",
+    "--session-id",
+    "--setting-sources",
+    "--settings",
+    "--system-prompt",
+    "--system-prompt-file",
+    "--system-prompt-snapshot",
+    "--tools",
+];
 
 /// Claude's transport-only stdio flags: stream-json in and out, partial messages and
 /// echoed user messages. The profile adds `--permission-mode bypassPermissions` under
@@ -181,13 +220,19 @@ impl AgentProfile for ClaudeProfile {
             pty: Support::Supported,
             rpc_launch: Support::Supported,
             login_check: Support::Supported,
-            evidence: &[Evidence {
-                operation: "ready screen recognition",
-                kind: EvidenceKind::CapturedTerminal,
-                cli_version: Some("2.1.293"),
-                platform: None,
-                source: "tests/fixtures/claude-2.1.293-ready.bin",
-            }],
+            evidence: &[
+                Evidence {
+                    operation: "ready screen recognition",
+                    kind: EvidenceKind::CapturedTerminal,
+                    cli_version: Some("2.1.293"),
+                    platform: None,
+                    source: "tests/fixtures/claude-2.1.293-ready.bin",
+                },
+                Evidence {
+                    cli_version: Some("2.1.327"),
+                    ..super::MODEL_ARGV_EVIDENCE
+                },
+            ],
         }
     }
 
@@ -234,6 +279,18 @@ impl AgentProfile for ClaudeProfile {
             &[]
         };
         LaunchPlan::new("claude").with_permissions(perms, unattended, &[])
+    }
+
+    fn model_args(&self, choice: &ModelChoice, base_args: &[String]) -> crate::Result<Vec<String>> {
+        super::long_model_args(
+            self.id(),
+            choice,
+            base_args,
+            "--effort",
+            &["low", "medium", "high", "xhigh", "max"],
+            VALUE_OPTIONS,
+            |word| word.split_once('=').map_or(word, |(name, _)| name),
+        )
     }
 
     fn reset_command(&self) -> Option<&'static str> {
