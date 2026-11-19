@@ -59,7 +59,7 @@ pub(in crate::agent) mod turns {
     pub(in crate::agent) mod claude;
     #[cfg(feature = "turns")]
     pub(in crate::agent) mod isolated;
-    mod json;
+    pub(in crate::agent) mod json;
 }
 
 use std::fmt;

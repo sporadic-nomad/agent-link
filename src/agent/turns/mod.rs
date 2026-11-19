@@ -275,6 +275,7 @@ impl Permit {
         slot.occupied
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| AttachError::Busy)?;
+        #[allow(deprecated, reason = "try_update is unavailable on the Rust 1.85 MSRV")]
         if WORKERS
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < MAX_WORKERS).then_some(n + 1)

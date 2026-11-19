@@ -166,7 +166,7 @@ fn launch_words_are_posix_quoted_and_controls_refused() {
 }
 
 /// fish reads `\\` and `\'` as escapes inside single quotes: a word holding a backslash is
-/// quoted with both escaped there; any other word is quoted as for POSIX shells.
+/// quoted with both escaped there. An apostrophe alone also uses fish quoting.
 #[test]
 fn fish_gets_backslashes_escaped_inside_single_quotes() {
     let launch = RpcLaunch::new(
@@ -175,7 +175,7 @@ fn fish_gets_backslashes_escaped_inside_single_quotes() {
     );
     assert_eq!(
         shell_command(&launch, "/opt/homebrew/bin/fish").unwrap(),
-        r"exec agent 'a\\b' 'a\\\\b' 'end\\' 'it\\\'s' 'it'\''s' plain"
+        r"exec agent 'a\\b' 'a\\\\b' 'end\\' 'it\\\'s' 'it\'s' plain"
     );
     assert_eq!(
         shell_command(&launch, "/bin/bash").unwrap(),

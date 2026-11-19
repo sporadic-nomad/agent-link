@@ -2,8 +2,9 @@
 //! request withdraws the previous one. Raw JSON slices retain duplicate-field detection
 //! and leave unrelated tool arguments and results undecoded.
 use super::{MAX_OPTIONS, MAX_QUESTION_BYTES, MAX_QUESTIONS, PendingQuestion, QuestionItem};
+use crate::agent::profiles::turns::json::{array, fields, object};
 use serde::Deserialize;
-use serde_json::value::RawValue;
+use serde::de::IgnoredAny;
 
 pub(in crate::agent) enum TranscriptChange {
     Keep,
@@ -23,24 +24,10 @@ pub(in crate::agent) fn provider_record(provider: &str, line: &[u8]) -> Transcri
     }
 }
 
-fn fields<'a, T: Deserialize<'a>>(raw: &'a str) -> Option<T> {
-    raw.trim_ascii_start()
-        .starts_with('{')
-        .then(|| serde_json::from_str(raw).ok())
-        .flatten()
-}
-
 #[derive(Deserialize)]
-struct ToolInput<'a> {
-    #[serde(borrow)]
-    questions: Vec<&'a RawValue>,
-}
-#[derive(Deserialize)]
-struct Item<'a> {
+struct Item {
     header: String,
     question: String,
-    #[serde(borrow)]
-    options: Vec<&'a RawValue>,
     #[serde(rename = "multiSelect")]
     multi: Option<bool>,
     #[serde(rename = "isOther")]
@@ -57,21 +44,22 @@ fn request(id: &str, raw: &str, claude: bool) -> Option<TranscriptChange> {
     if id.is_empty() || id.len() > 128 {
         return None;
     }
-    let input: ToolInput = fields(raw)?;
-    if input.questions.len() > MAX_QUESTIONS {
-        return None;
-    }
-    let mut questions = Vec::with_capacity(input.questions.len());
-    for raw in input.questions {
-        let q: Item = fields(raw.get())?;
-        if q.options.len() > MAX_OPTIONS || q.secret == Some(true) {
+    // Codex embeds the request as a JSON string. Validate that document before
+    // borrowing field ranges from it, just as for a Claude tool input.
+    object::<IgnoredAny>(raw).ok()?;
+    let [items] = fields(raw, ["questions"]).ok()?;
+    let items = array(items?, MAX_QUESTIONS, Ok).ok()?;
+    let mut questions = Vec::with_capacity(items.len());
+    for item in items {
+        let q: Item = object(item).ok()?;
+        if q.secret == Some(true) {
             return None;
         }
-        let options = q
-            .options
-            .iter()
-            .map(|raw| fields::<Choice>(raw.get()).map(|o| o.label))
-            .collect::<Option<_>>()?;
+        let [options] = fields(item, ["options"]).ok()?;
+        let options = array(options?, MAX_OPTIONS, |raw| {
+            object::<Choice>(raw).map(|choice| choice.label)
+        })
+        .ok()?;
         questions.push(
             QuestionItem::new(q.header, q.question, options)
                 .with_multi_select(claude && q.multi == Some(true))
@@ -98,12 +86,10 @@ struct ClaudeRow<'a> {
     is_meta: bool,
     #[serde(default)]
     is_aborted_mid_stream: bool,
-    message: Option<&'a RawValue>,
 }
 #[derive(Deserialize)]
 struct Message<'a> {
     role: &'a str,
-    content: &'a RawValue,
 }
 #[derive(Deserialize)]
 struct Block<'a> {
@@ -112,34 +98,38 @@ struct Block<'a> {
     name: Option<&'a str>,
     id: Option<&'a str>,
     tool_use_id: Option<&'a str>,
-    input: Option<&'a RawValue>,
 }
 
 fn claude(line: &[u8]) -> Option<TranscriptChange> {
-    let row: ClaudeRow = fields(std::str::from_utf8(line).ok()?)?;
+    let raw = std::str::from_utf8(line).ok()?;
+    let row: ClaudeRow = object(raw).ok()?;
+    let [message] = fields(raw, ["message"]).ok()?;
     if row.is_sidechain != Some(false) || row.is_meta {
         return Some(TranscriptChange::Keep);
     }
     if row.is_api_error_message || row.is_aborted_mid_stream {
         return None;
     }
-    let Some(raw) = row.message else {
+    let Some(raw) = message.filter(|&value| value != "null") else {
         return Some(TranscriptChange::Keep);
     };
-    let msg: Message = fields(raw.get())?;
+    let msg: Message = object(raw).ok()?;
+    let [content] = fields(raw, ["content"]).ok()?;
+    let content = content?;
     if msg.role != row.kind {
         return None;
     }
-    if !msg.content.get().trim_ascii_start().starts_with('[') {
+    if !content.starts_with('[') {
         return Some(TranscriptChange::Keep);
     }
-    let blocks: Vec<&RawValue> = serde_json::from_str(msg.content.get()).ok()?;
+    let blocks = array(content, content.len(), Ok).ok()?;
     let mut change = TranscriptChange::Keep;
     for raw in blocks {
-        let b: Block = fields(raw.get())?;
+        let b: Block = object(raw).ok()?;
+        let [input] = fields(raw, ["input"]).ok()?;
         let next = match (msg.role, b.kind) {
             ("assistant", "tool_use") if b.name == Some("AskUserQuestion") => {
-                request(b.id?, b.input?.get(), true)?
+                request(b.id?, input?, true)?
             }
             ("user", "tool_result") => resolution(b.tool_use_id?)?,
             _ => continue,
@@ -156,7 +146,6 @@ fn claude(line: &[u8]) -> Option<TranscriptChange> {
 struct CodexRow<'a> {
     #[serde(rename = "type")]
     kind: &'a str,
-    payload: Option<&'a RawValue>,
 }
 #[derive(Deserialize)]
 struct Response<'a> {
@@ -168,11 +157,13 @@ struct Response<'a> {
 }
 
 fn codex(line: &[u8]) -> Option<TranscriptChange> {
-    let row: CodexRow = fields(std::str::from_utf8(line).ok()?)?;
+    let raw = std::str::from_utf8(line).ok()?;
+    let row: CodexRow = object(raw).ok()?;
+    let [payload] = fields(raw, ["payload"]).ok()?;
     if row.kind != "response_item" {
         return Some(TranscriptChange::Keep);
     }
-    let r: Response = fields(row.payload?.get())?;
+    let r: Response = object(payload?).ok()?;
     match r.kind {
         "function_call" if r.name == Some("request_user_input") => {
             request(r.call_id?, &r.arguments?, false)

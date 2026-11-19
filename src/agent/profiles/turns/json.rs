@@ -16,9 +16,7 @@ pub(in crate::agent::profiles::turns) fn decode<'a, T: Deserialize<'a>>(
     object(std::str::from_utf8(bytes).map_err(|_| Gap::Format)?)
 }
 
-pub(in crate::agent::profiles::turns) fn object<'a, T: Deserialize<'a>>(
-    json: &'a str,
-) -> Result<T, Gap> {
+pub(in crate::agent) fn object<'a, T: Deserialize<'a>>(json: &'a str) -> Result<T, Gap> {
     // Serde structs also accept positional arrays. The recorded protocol uses
     // named fields for attribution, messages and blocks.
     if !json.trim_ascii_start().starts_with('{') {
@@ -172,7 +170,7 @@ fn members<'a>(
 
 /// Select only the named raw fields. Match escaped field names just as Serde's
 /// derived structs do and reject duplicates, including duplicate null values.
-pub(in crate::agent::profiles::turns) fn fields<'a, const N: usize>(
+pub(in crate::agent) fn fields<'a, const N: usize>(
     raw: &'a str,
     names: [&str; N],
 ) -> Result<[Option<&'a str>; N], Gap> {
@@ -197,18 +195,29 @@ pub(in crate::agent::profiles::turns) fn fields<'a, const N: usize>(
     Ok(found)
 }
 
-/// Keep at most MAX_BLOCKS small descriptors borrowing the already bounded line.
-pub(in crate::agent::profiles::turns) fn blocks(input: &str) -> Result<Vec<Block<'_>>, Gap> {
-    let mut blocks = Vec::new();
+/// Decode elements of a validated array, stopping before the item budget is exceeded.
+pub(in crate::agent) fn array<'a, T>(
+    input: &'a str,
+    limit: usize,
+    mut parse: impl FnMut(&'a str) -> Result<T, Gap>,
+) -> Result<Vec<T>, Gap> {
+    let mut values = Vec::new();
     members(input, '[', ']', |rest| {
-        if blocks.len() == MAX_BLOCKS {
+        if values.len() == limit {
             return Err(Gap::Oversized);
         }
         let (_, raw) = take::<IgnoredAny>(rest)?;
-        let mut block: Block = object(raw)?;
-        block.text = fields(raw, ["text"])?[0];
-        blocks.push(block);
+        values.push(parse(raw)?);
         Ok(())
     })?;
-    Ok(blocks)
+    Ok(values)
+}
+
+/// Keep at most MAX_BLOCKS small descriptors borrowing the already bounded line.
+pub(in crate::agent::profiles::turns) fn blocks(input: &str) -> Result<Vec<Block<'_>>, Gap> {
+    array(input, MAX_BLOCKS, |raw| {
+        let mut block: Block = object(raw)?;
+        block.text = fields(raw, ["text"])?[0];
+        Ok(block)
+    })
 }

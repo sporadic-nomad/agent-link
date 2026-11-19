@@ -37,7 +37,7 @@ agent = ["screen"]
 # Controlled PTY transcript observations with explicit host-enforced writer isolation.
 turns = ["agent", "dep:close_fds", "dep:rustix", "dep:serde", "dep:serde_json", "dep:sha2"]
 # Interactive PTY question events and host-confirmed answers.
-questions = ["turns", "serde_json/raw_value", "dep:base64", "dep:httparse", "dep:percent-encoding"]
+questions = ["turns", "dep:base64", "dep:httparse", "dep:percent-encoding"]
 # Per-run attachment of consumer-owned CLI tools and MCP connections.
 tools = ["agent", "dep:serde_json", "dep:tempfile", "dep:url"]
 # Stdio line transport for agents that speak JSON over stdin/stdout.

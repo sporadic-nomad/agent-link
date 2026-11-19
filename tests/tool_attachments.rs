@@ -12,7 +12,7 @@ use agent_link::agent::{
 use agent_link::env::EnvPolicy;
 use agent_link::rpc::{RpcChild, RpcEvent, RpcSpawnSpec};
 use agent_link::tools::{AgentTools, CliTool, McpBackend, McpServer, ToolTransport};
-use agent_link::{Error, Event, PtySize, SpawnSpec};
+use agent_link::{Error, PtySize, SpawnSpec};
 use serde_json::Value;
 
 fn tools() -> AgentTools {
@@ -209,28 +209,12 @@ fn malformed_mcp_urls_are_refused_before_pty_spawn() {
     }
 }
 
-fn read_pty(events: &crossbeam_channel::Receiver<Event>) -> Value {
-    let deadline = common::deadline();
-    let mut output = String::new();
-    loop {
-        match events
-            .recv_deadline(deadline)
-            .expect("PTY tool peer report")
-        {
-            Event::Output { bytes, .. } => {
-                output.push_str(&String::from_utf8_lossy(&bytes));
-                for line in output.lines() {
-                    if let Ok(value) = serde_json::from_str::<Value>(line.trim()) {
-                        if value["tool_peer"] == true {
-                            return value;
-                        }
-                    }
-                }
-            }
-            Event::Exit { .. } => panic!("peer exited before reporting: {output:?}"),
-            _ => {}
-        }
-    }
+fn read_pty_report(cwd: &Path) -> Value {
+    let path = cwd.join("tool-report.json");
+    common::wait_until("PTY tool peer report", || path.exists());
+    let report = std::fs::read(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    serde_json::from_slice(&report).unwrap()
 }
 
 #[test]
@@ -246,13 +230,14 @@ fn direct_pty_retains_attachment_without_overwriting_explicit_arguments() {
         },
     );
     spec.env = isolated(home.path());
+    spec.env.set("AGENT_LINK_TEST_TOOL_REPORT", "1");
     let mut agent = AgentSpec::new(Arc::new(ToolProfile::default()));
     agent.trace = Some(false);
-    let (terminal, events) = {
+    let (terminal, _events) = {
         let _guard = common::spawn_lock();
         AgentTerminal::spawn_with_tools(spec, agent, &tools()).unwrap()
     };
-    let report = read_pty(&events);
+    let report = read_pty_report(home.path());
     check_report(&report);
     assert!(
         !report["args"]
@@ -262,8 +247,13 @@ fn direct_pty_retains_attachment_without_overwriting_explicit_arguments() {
             .any(|a| a == "--synthetic-permission-flag")
     );
     let path = PathBuf::from(report["config_path"].as_str().unwrap());
-    terminal.terminal().write(b"inspect\n").unwrap();
-    check_report(&read_pty(&events));
+    let inspect = if cfg!(windows) {
+        b"inspect\r"
+    } else {
+        b"inspect\n"
+    };
+    terminal.terminal().write(inspect).unwrap();
+    check_report(&read_pty_report(home.path()));
     assert!(path.exists());
     drop(terminal);
     assert!(!path.parent().unwrap().exists());
@@ -277,7 +267,8 @@ fn shell_pty_applies_tools_to_the_normal_profile_launch() {
         None,
         Some(ModelChoice::new("tool peer [1m]").with_effort("high")),
     ] {
-        let spec = common::sh_spec(home.path());
+        let mut spec = common::sh_spec(home.path());
+        spec.env.set("AGENT_LINK_TEST_TOOL_REPORT", "1");
         let selected = model.is_some();
         let profile = Arc::new(ToolProfile::default());
         let agent = AgentSpec {
@@ -285,12 +276,12 @@ fn shell_pty_applies_tools_to_the_normal_profile_launch() {
             trace: Some(false),
             ..AgentSpec::new(profile.clone())
         };
-        let (terminal, events) = {
+        let (terminal, _events) = {
             let _guard = common::spawn_lock();
             AgentTerminal::spawn_with_tools(spec, agent, &tools()).unwrap()
         };
         terminal.launch().unwrap();
-        let report = read_pty(&events);
+        let report = read_pty_report(home.path());
         check_report(&report);
         let program = common::fake_agent_path();
         let mut expected = vec![
@@ -310,7 +301,7 @@ fn shell_pty_applies_tools_to_the_normal_profile_launch() {
             usize::from(selected)
         );
         terminal.terminal().write(b"inspect\n").unwrap();
-        check_report(&read_pty(&events));
+        check_report(&read_pty_report(home.path()));
         assert!(path.exists());
         drop(terminal);
         assert!(!path.parent().unwrap().exists());

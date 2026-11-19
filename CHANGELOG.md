@@ -69,6 +69,8 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- Enabling `questions` alongside a native stdio adapter preserves literal JSON
+  extension keys in provider events.
 - Profile-built PTY launches use fish quoting when the resolved Unix shell is named
   `fish`, preserving literal backslashes and apostrophes in model IDs and other arguments.
 

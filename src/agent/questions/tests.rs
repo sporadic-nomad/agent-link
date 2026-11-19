@@ -232,6 +232,28 @@ fn recorded_transcript_requests_resolve_only_the_same_provider_call() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn transcript_question_fields_reject_duplicates_and_positional_options() {
+    let row = include_str!("../../../tests/fixtures/questions/claude-2.1.296.jsonl")
+        .lines()
+        .next()
+        .unwrap();
+    for malformed in [
+        row.replace(r#""input":"#, r#""input":null,"in\u0070ut":"#),
+        row.replace(r#""options":"#, r#""options":[],"options":"#),
+        row.replace(
+            r#"{"label":"Blue","description":"Use a cool shade"}"#,
+            r#"["Blue"]"#,
+        ),
+    ] {
+        assert!(matches!(
+            provider_record("claude", malformed.as_bytes()),
+            TranscriptChange::Clear
+        ));
+    }
+}
+
 #[test]
 fn bounded_payloads_and_diagnostics_preserve_whole_requests_and_redact_content() {
     let item = QuestionItem::new(
