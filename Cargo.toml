@@ -37,7 +37,7 @@ agent = ["screen"]
 # Controlled PTY transcript observations with explicit host-enforced writer isolation.
 turns = ["agent", "dep:close_fds", "dep:rustix", "dep:serde", "dep:serde_json", "dep:sha2"]
 # Interactive PTY question events and host-confirmed answers.
-questions = ["turns", "serde_json/raw_value"]
+questions = ["turns", "serde_json/raw_value", "dep:base64", "dep:httparse", "dep:percent-encoding"]
 # Per-run attachment of consumer-owned CLI tools and MCP connections.
 tools = ["agent", "dep:serde_json", "dep:tempfile", "dep:url"]
 # Stdio line transport for agents that speak JSON over stdin/stdout.
@@ -72,6 +72,11 @@ log = "0.4"
 thiserror = "2"
 # Native protocol data only; no vendor SDK or async runtime.
 serde_json = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+# Authenticated persistent HTTP/1.1 question connections to a host-bound OpenCode peer.
+base64 = { version = "0.22", optional = true }
+httparse = { version = "1.10", optional = true }
+percent-encoding = { version = "2.3", optional = true }
 # Private, automatically removed per-run tool configuration files; MSRV 1.63.
 tempfile = { version = "3.10", optional = true }
 # `tools`: endpoint URL parsing only; no network client or runtime.
@@ -89,7 +94,6 @@ tokio = { version = "1.37", optional = true, features = ["sync", "rt"] }
 libc = "0.2"
 # Descriptor-relative transcript lookup and bounded JSON projections.
 rustix = { version = "1", features = ["fs"], optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
 # Fingerprint Cursor's prior records across an in-place transcript rewrite.
 sha2 = { version = "0.10.9", optional = true }
 
@@ -155,6 +159,10 @@ path = "tests/support/fake_agent.rs"
 required-features = ["test-support"]
 test = false
 doc = false
+
+[[test]]
+name = "opencode_questions"
+required-features = ["questions"]
 
 [[test]]
 name = "pty_questions"

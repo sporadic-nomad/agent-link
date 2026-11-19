@@ -83,6 +83,12 @@ impl TranscriptReceiver {
     }
 }
 
+impl Drop for TranscriptReceiver {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 /// Host-controlled directory dedicated to one interactive PTY's transcript writers.
 /// Configure isolated credentials and settings as needed. Start with an empty provider
 /// transcript namespace. The host must exclude other writers, remote/shared backends,

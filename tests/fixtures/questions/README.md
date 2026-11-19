@@ -9,3 +9,5 @@ The four files sharing a capture stem retain PTY bytes, geometry and version met
 For the Cursor 2026.11.13-eacade1 samples, the original packaged decision renderer and Ink input handler ran inside a real PTY with a local example command and inert action callbacks. `cursor-key-intents.jsonl` records their outcomes for `y` and `n`. The latter started the alternative-instruction flow. This exercise used no account, executed no command and made no live service call.
 
 Replay the projected screens and record pairs with `cargo test --locked --no-default-features --features questions --lib agent::questions:: -- --test-threads=1`. The real foreground, byte ordering and teardown regressions run with `cargo test --locked --no-default-features --features questions,test-support --test pty_questions -- --test-threads=1`.
+
+OpenCode 1.18.21 ran its native server and attached TUI against a local model peer. The captured request and public acceptance exercise the session-specific list, terminal event, answer ticket and selected model result. [OpenCode exchange](opencode-1.18.21/README.md)

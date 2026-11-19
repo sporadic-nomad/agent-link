@@ -464,4 +464,127 @@ mod native {
             .unwrap();
         assert_eq!(fs::canonicalize(exported).unwrap(), root);
     }
+
+    #[cfg(feature = "questions")]
+    #[test]
+    fn codex_questions_and_final_replies_share_one_verified_transcript() {
+        use agent_link::Event;
+        use agent_link::agent::questions::{Answer, ClosedBy};
+
+        let setup = Setup::new();
+        let (root, lease) = setup.lease("question-root");
+        let bin = setup.cwd.join("mock-cli");
+        fs::create_dir(&bin).unwrap();
+        symlink("/bin/zsh", bin.join("codex")).unwrap();
+        // The foreground process replays the recorded question screen and acknowledges
+        // the first answer byte. Transcript writes below are explicitly controlled.
+        let screen = include_str!("fixtures/codex-0.154.0-question-plan.txt");
+        write(
+            &setup.cwd.join("screen"),
+            &screen.trim_end().replace('\n', "\r\n"),
+        );
+        write(
+            &setup.cwd.join(".zshenv"),
+            r#"unsetopt monitor
+stty raw -echo || exit 2
+printf '\033]0;question-replay-ready\007'
+read -rk 1 gate || exit 3
+cat screen || exit 4
+dd bs=1 count=1 of=received 2>/dev/null || exit 5
+printf '\033[2J\033[H\033]0;answer-received\007'
+read -rk 1 end
+exit 0
+"#,
+        );
+        let mut spec = SpawnSpec::direct(
+            bin.join("codex"),
+            std::iter::empty::<&str>(),
+            &setup.cwd,
+            PtySize {
+                rows: 40,
+                cols: 120,
+            },
+        );
+        spec.env.inherit = false;
+        spec.env.set("HOME", &setup.cwd);
+        spec.env.set("ZDOTDIR", &setup.cwd);
+        spec.env.set("PATH", "/usr/bin:/bin");
+        let agent = AgentSpec::new(Arc::new(CodexProfile));
+        let (term, events) =
+            AgentTerminal::spawn_with_transcript_turns(spec, agent, Source::Codex, &lease).unwrap();
+        let reader = term
+            .attach_transcript_turns(TurnOptions::default())
+            .unwrap();
+        let path = setup.codex_header(&root);
+        at_eof(&reader, &path);
+        {
+            let (_, pi_root) = setup.lease("unrelated-question-source");
+            let (other_terminal, pi) = setup.attach(Source::Pi, &pi_root, TurnOptions::default());
+            assert!(matches!(
+                other_terminal.observe_provider_questions(&reader),
+                Err(Error::InvalidInput(_))
+            ));
+            assert!(matches!(
+                term.observe_provider_questions(&pi),
+                Err(Error::Unsupported(_))
+            ));
+        }
+        term.observe_provider_questions(&reader).unwrap();
+        until(&reader, || {
+            term.terminal()
+                .screen()
+                .filter(|s| s.title == "question-replay-ready")
+        });
+        let mut calls = include_str!("fixtures/questions/codex-0.154.0.jsonl").lines();
+        let mut turn = CODEX.lines().skip(1);
+        append(
+            &path,
+            &format!("{}\n{}\n", turn.next().unwrap(), calls.next().unwrap()),
+        );
+        term.terminal().write(b"!").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let remaining = || {
+            deadline
+                .checked_duration_since(Instant::now())
+                .expect("question deadline")
+        };
+        let id = loop {
+            if let Event::Question { qid, questions, .. } =
+                events.recv_timeout(remaining()).unwrap()
+            {
+                assert_eq!(questions[0].options, ["Blue", "Amber"]);
+                break qid;
+            }
+        };
+        assert_eq!(
+            term.answer_question(id, vec![Answer::Choice(0)])
+                .wait(remaining()),
+            Some(Ok(()))
+        );
+        until(&reader, || {
+            term.terminal()
+                .screen()
+                .filter(|s| s.title == "answer-received")
+        });
+        assert_eq!(fs::read(setup.cwd.join("received")).unwrap(), b"\r");
+        append(
+            &path,
+            &format!(
+                "{}\n{}\n{}\n",
+                calls.next().unwrap(),
+                turn.next().unwrap(),
+                turn.next().unwrap()
+            ),
+        );
+        loop {
+            if let Event::QuestionClosed { qid, by, .. } = events.recv_timeout(remaining()).unwrap()
+            {
+                assert_eq!((qid, by), (id, ClosedBy::Host));
+                break;
+            }
+        }
+        assert!(
+            matches!(next(&reader), TranscriptTurn::CodexFinal(reply) if reply.text == "Sample confirmed.")
+        );
+    }
 }

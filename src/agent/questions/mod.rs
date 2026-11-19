@@ -7,6 +7,7 @@
 
 mod book;
 mod dispatch;
+pub mod opencode;
 pub(in crate::agent) mod providers;
 #[cfg(test)]
 mod tests;

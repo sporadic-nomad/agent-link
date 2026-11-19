@@ -314,6 +314,7 @@ impl TurnReceiver {
             .current(&launch)
             .and_then(|cur| opened.confirm(&launch, cur))
             .and_then(|()| cursor.confirm(&opened))
+            .and_then(|()| opened.confirm(&launch, witness.current(&launch)?))
             .and_then(|()| opened.observed_len());
         let length = checked.map_err(|reason| {
             self.stream.finish(Status::Gap(reason));
@@ -330,7 +331,10 @@ impl TurnReceiver {
                 return Err(AnswerError::NotOpen);
             }
             if !q.pending.complete
-                || q.cursor.as_ref().and_then(Position::append_cursor).is_none_or(|c| c.offset != cursor.offset)
+                || q.cursor
+                    .as_ref()
+                    .and_then(Position::append_cursor)
+                    .is_none_or(|c| c.offset != cursor.offset)
                 || !q
                     .pending
                     .question

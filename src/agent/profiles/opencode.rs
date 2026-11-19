@@ -98,6 +98,14 @@ impl AgentProfile for OpencodeProfile {
                     platform: Some("macos-aarch64"),
                     source: "tests/fixtures/opencode-1.18.21-question.bin",
                 },
+                #[cfg(feature = "questions")]
+                Evidence {
+                    operation: "session-bound PTY question observation and HTTP answer",
+                    kind: EvidenceKind::LiveCheck,
+                    cli_version: Some("1.18.21"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/questions/opencode-1.18.21/README.md",
+                },
                 Evidence {
                     operation: "ready screen recognition",
                     kind: EvidenceKind::SyntheticFixture,

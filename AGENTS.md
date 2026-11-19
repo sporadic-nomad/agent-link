@@ -111,7 +111,7 @@ that merely reproduce an implementation expression or unnecessarily expose priva
 | Input admission or overload | Queue unit tests; `tests/input_limits.rs`, `tests/profile_isolation.rs` |
 | Agent startup, ownership, delivery or reset | State/startup unit tests; `tests/agent_startup.rs`, `tests/agent_delivery.rs`, `tests/agent_delivery_owner.rs`, `tests/agent_strict.rs`, `tests/agent_reset.rs` |
 | Isolated Codex, Pi and Cursor PTY turn observation | `agent::profiles::turns::isolated`, `tests/isolated_turns.rs`, `tests/compatibility.rs` |
-| PTY question observation and answers | `agent::questions`, `tests/pty_questions.rs`, `tests/fixtures/questions/` |
+| PTY question observation and answers | `agent::questions`, `tests/pty_questions.rs`, `tests/isolated_turns.rs`, `tests/fixtures/questions/`, optional native `scripts/check_opencode_questions.py` |
 | Claude PTY turn observation | `agent::turns`, `agent::profiles::turns::claude`, `tests/claude_turns.rs`, `tests/compatibility.rs` |
 | RPC framing, errors or privacy | `src/rpc/tests.rs`, framing/input unit tests, `tests/rpc_roundtrip.rs` |
 | Native adapter lifecycle or protocol | `src/codex/tests.rs`, `tests/codex_adapter.rs`, `src/claude/tests.rs`; synthetic pinned wire projections in `tests/fixtures/codex-app-server/` |

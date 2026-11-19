@@ -1,0 +1,27 @@
+[
+  {
+    "id": "que_local",
+    "sessionID": "ses_local",
+    "questions": [
+      {
+        "question": "Which color should the sample use?",
+        "header": "Color",
+        "options": [
+          {
+            "label": "Blue",
+            "description": "Use a cool shade"
+          },
+          {
+            "label": "Amber",
+            "description": "Use a warm shade"
+          }
+        ],
+        "multiple": false
+      }
+    ],
+    "tool": {
+      "messageID": "msg_fixture",
+      "callID": "call_fixture"
+    }
+  }
+]

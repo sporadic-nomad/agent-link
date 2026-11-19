@@ -467,6 +467,24 @@ impl AgentTerminal {
         }
     }
 
+    /// Corroborate a Codex Plan question using this terminal's isolated transcript
+    /// and live screen. Keep polling the receiver for final replies. Dropping or
+    /// stopping it ends its authority to answer a question.
+    ///
+    /// Returns an error for a different terminal, a closed reader or a provider
+    /// without a supported transcript question format.
+    pub fn observe_provider_questions(
+        &self,
+        receiver: &crate::agent::turns::TranscriptReceiver,
+    ) -> crate::Result<()> {
+        if receiver.source != crate::agent::turns::TranscriptSource::Codex {
+            return Err(crate::Error::Unsupported(
+                "isolated transcript questions require a Codex reader".into(),
+            ));
+        }
+        self.observe_transcript_questions(receiver.receiver.clone())
+    }
+
     fn start_questions(&self, source: Source) -> crate::Result<()> {
         if self.ctl.cfg.profile.is_none() {
             return Err(crate::Error::Unsupported(

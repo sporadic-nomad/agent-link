@@ -319,6 +319,15 @@ fn append(reply: &mut Reply, text: Text<'_>, limit: usize) -> Result<(), Gap> {
 }
 
 impl Parser for ProviderParser {
+    #[cfg(feature = "questions")]
+    fn question_record(&self, line: &[u8]) -> crate::agent::questions::TranscriptChange {
+        use crate::agent::questions::{TranscriptChange, provider_record};
+        match self.provider {
+            TranscriptSource::Codex => provider_record("codex", line),
+            _ => TranscriptChange::Keep,
+        }
+    }
+
     fn record(&mut self, _: &Binding, bytes: &[u8], limit: usize) -> Result<Record, Gap> {
         let row = valid_json(bytes)?;
         let kind = match self.provider {

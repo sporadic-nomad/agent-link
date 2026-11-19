@@ -54,7 +54,7 @@ cargo test --locked --no-default-features --features questions --lib agent::ques
 cargo test --locked --no-default-features --features questions,test-support --test pty_questions -- --test-threads=1
 cargo test --locked --no-default-features --features turns --lib agent::profiles::turns::claude -- --test-threads=1
 cargo test --locked --no-default-features --features turns --lib agent::turns:: -- --test-threads=1
-cargo test --locked --no-default-features --features turns --test claude_turns --test compatibility -- --test-threads=1
+cargo test --locked --no-default-features --features turns --test claude_turns --test isolated_turns --test compatibility -- --test-threads=1
 ```
 
 Add a regression test for a behavioral fix, update public API documentation, and
