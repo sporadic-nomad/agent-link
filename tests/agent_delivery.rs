@@ -691,7 +691,7 @@ mod question_redraws {
         fn wait_for_redraw(&self) {
             let _ = self.reached.try_send(());
             // Dropping the test's sender releases the callback, including on unwind.
-            let _ = self.resume.recv_timeout(WAIT);
+            let _ = self.resume.recv_timeout(DELIVERY_WAIT);
         }
     }
 
@@ -836,9 +836,14 @@ mod question_redraws {
         reached
             .recv_timeout(DELIVERY_WAIT)
             .expect("profile saw the question");
-        // The peer exited on readable stdin. Only the shell can echo this draft.
-        screen_contains(term.terminal(), "inherited draft", WAIT);
+        // The peer replaced the old prompt title and exited with unread input.
+        // A canonical shell need not echo bytes that arrived while echo was off.
+        wait_screen(term.terminal(), WAIT, |s| {
+            s.title == "agent-link-shell-status:0"
+        });
         assert_eq!(term.terminal().foreground().owner, ForegroundOwner::Shell);
+        term.terminal().write(b"# pending comment").unwrap();
+        screen_contains(term.terminal(), "pending comment", WAIT);
         drop(resume);
         assert_eq!(
             outcome(&term, &events, &ticket),
