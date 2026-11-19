@@ -20,7 +20,7 @@ def main():
     os.chdir(Path(__file__).resolve().parent.parent)
     run(sys.executable, "scripts/check_docs.py")
     run("cargo", "fmt", "--all", "--", "--check")
-    for features in ("", "screen", "observers", "transcript", "turns", "turns,tokio", "approvals", "approvals,codex", "approvals,acp", "approvals,claude", "agent", "tools", "tools,rpc", "tools,codex", "tools,acp", "tools,claude", "tools,tokio", "rpc", "acp", "codex", "claude", "probe", "tokio", "agent,tokio", "rpc,probe,tokio", "codex,tokio", "acp,tokio", "claude,tokio"):
+    for features in ("", "screen", "observers", "transcript", "turns", "turns,tokio", "questions", "questions,tokio", "approvals", "approvals,codex", "approvals,acp", "approvals,claude", "agent", "tools", "tools,rpc", "tools,codex", "tools,acp", "tools,claude", "tools,tokio", "rpc", "acp", "codex", "claude", "probe", "tokio", "agent,tokio", "rpc,probe,tokio", "codex,tokio", "acp,tokio", "claude,tokio"):
         command = ["cargo", "clippy", "--locked", "--lib", "--no-default-features"]
         if features:
             command += ["--features", features]

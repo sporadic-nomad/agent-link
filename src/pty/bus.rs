@@ -392,6 +392,9 @@ impl EventBus {
         watcher: Option<&Sender<Event>>,
         event: Event,
     ) {
+        #[cfg(feature = "questions")]
+        let watcher = watcher
+            .filter(|_| !matches!(event, Event::Question { .. } | Event::QuestionClosed { .. }));
         let mut gone = Vec::new();
         for tx in subscribers {
             match self.send(tx, event.clone()) {

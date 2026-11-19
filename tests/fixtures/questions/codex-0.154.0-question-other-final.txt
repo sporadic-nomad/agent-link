@@ -1,0 +1,29 @@
+╭───────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)            │
+│                                       │
+│ model:       gpt-5   /model to change │
+│ directory:   ~/survey                 │
+│ permissions: YOLO mode                │
+╰───────────────────────────────────────╯
+
+  Tip: New Build faster with the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+
+• Model changed to gpt-5 medium for Plan mode.
+
+
+› Survey fixture
+
+
+⚠ Model metadata for `gpt-5` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.
+
+• Questions 1/1 answered
+  • Which color should the sample use?
+    answer: None of the above
+    note: Green
+
+• Sample confirmed.
+
+
+› Ask Codex to do anything
+
+  gpt-5 medium · ~/survey                                                               Plan mode (shift+tab to cycle)

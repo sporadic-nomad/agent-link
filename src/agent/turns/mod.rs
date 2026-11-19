@@ -196,6 +196,10 @@ pub(super) trait Source: Send + 'static {
 /// Receives complete records only. Retained parser state must fit one bounded reply
 /// candidate plus bounded provider metadata (including identifier and block counts).
 pub(super) trait Parser: Send + 'static {
+    #[cfg(feature = "questions")]
+    fn question_record(&self, _line: &[u8]) -> crate::agent::questions::TranscriptChange {
+        crate::agent::questions::TranscriptChange::Keep
+    }
     fn record(&mut self, binding: &Binding, line: &[u8], reply_limit: usize)
     -> Result<Record, Gap>;
     // Only Pi implements an expressly inferred quiet-time boundary.

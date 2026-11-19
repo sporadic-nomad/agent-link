@@ -74,7 +74,7 @@ fn spawn_running(
         .spawn(move || {
             if let Err(message) = catch_panic(|| run(&ctl, &events, &msgs)) {
                 log::error!("[agent-link:{id}] agent monitor stopped after a panic: {message}");
-                ctl.update_quietly(|st, _| st.monitor_failed = true);
+                ctl.update_quietly(|st, _| st.monitor_stopped());
                 if let Err(message) = catch_panic(|| publish_only(&ctl, &events, &msgs)) {
                     log::error!("[agent-link:{id}] agent monitor publisher panicked: {message}");
                 }
@@ -87,7 +87,7 @@ fn run(ctl: &Controller, events: &Receiver<Event>, msgs: &Receiver<MonitorMsg>) 
     loop {
         let alive = apply_queued(ctl, events);
         if ctl.read(|st| st.monitor_unavailable()) {
-            ctl.update_quietly(|st, _| st.monitor_failed = true);
+            ctl.update_quietly(|st, _| st.monitor_stopped());
             publish_only(ctl, events, msgs);
             return;
         }

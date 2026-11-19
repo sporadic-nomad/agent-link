@@ -22,7 +22,7 @@ resolver = "3"
 # docs.rs documents the default features only unless told otherwise; `codex`, `claude`, `rpc`, `probe` and
 # `tokio` items must show too.
 [package.metadata.docs.rs]
-features = ["acp", "claude", "codex", "rpc", "probe", "tokio", "observers", "transcript", "approvals", "tools", "turns"]
+features = ["acp", "claude", "codex", "rpc", "probe", "tokio", "observers", "transcript", "approvals", "tools", "turns", "questions"]
 
 [features]
 default = ["screen", "agent"]
@@ -36,6 +36,8 @@ screen = ["dep:vt100", "dep:regex"]
 agent = ["screen"]
 # Controlled PTY transcript observations with explicit host-enforced writer isolation.
 turns = ["agent", "dep:close_fds", "dep:rustix", "dep:serde", "dep:serde_json", "dep:sha2"]
+# Interactive PTY question events and host-confirmed answers.
+questions = ["turns", "serde_json/raw_value"]
 # Per-run attachment of consumer-owned CLI tools and MCP connections.
 tools = ["agent", "dep:serde_json", "dep:tempfile", "dep:url"]
 # Stdio line transport for agents that speak JSON over stdin/stdout.
@@ -153,6 +155,10 @@ path = "tests/support/fake_agent.rs"
 required-features = ["test-support"]
 test = false
 doc = false
+
+[[test]]
+name = "pty_questions"
+required-features = ["questions", "test-support"]
 
 [[test]]
 name = "agent_delivery"

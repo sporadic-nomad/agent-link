@@ -207,6 +207,13 @@ pub(crate) enum Commit {
 /// Work an update hands back, done after the lock is released.
 #[derive(Debug)]
 pub(crate) enum Action {
+    #[cfg(feature = "questions")]
+    EndAnswer(
+        super::questions::AnswerTicket,
+        super::questions::AnswerError,
+    ),
+    #[cfg(feature = "questions")]
+    ReleaseQuestions(super::questions::Source),
     Write(Vec<u8>),
     Log(log::Level, String),
 }
@@ -222,6 +229,8 @@ pub(crate) enum MonitorMsg {
 
 /// Everything behind the controller's lock.
 pub(crate) struct CtlState {
+    #[cfg(feature = "questions")]
+    pub(in crate::agent) questions: super::questions::Book,
     cfg: Arc<Config>,
     pub(crate) gate: StartupGate,
     /// Invalidates profile evaluations performed outside the state lock.
@@ -284,7 +293,7 @@ pub(crate) struct CtlState {
     /// Events to publish, each with [`fed_at_update`](Self::fed_at_update) from when it was
     /// queued.
     outbox: VecDeque<(u64, Event)>,
-    actions: Vec<Action>,
+    pub(in crate::agent) actions: Vec<Action>,
 }
 
 impl CtlState {
@@ -295,6 +304,8 @@ impl CtlState {
         let activity = ActivityTracker::new(timing.idle_debounce, timing.progress_stale);
         let published_activity = activity.state();
         Self {
+            #[cfg(feature = "questions")]
+            questions: super::questions::Book::new(cfg.id),
             cfg,
             gate,
             gate_revision: 0,
@@ -333,6 +344,8 @@ impl CtlState {
     pub(crate) fn launch(&mut self, now: Instant) {
         self.lifecycle_revision = self.lifecycle_revision.wrapping_add(1);
         self.gate_revision = self.gate_revision.wrapping_add(1);
+        #[cfg(feature = "questions")]
+        self.invalidate_questions();
         self.gate.launch(now);
         self.activity.reset();
     }
@@ -566,6 +579,8 @@ impl CtlState {
 
     /// The session ended: no agent, no gate, activity idle (a bare shell's stays unknown).
     pub(crate) fn on_session_end(&mut self) {
+        #[cfg(feature = "questions")]
+        self.invalidate_questions();
         self.lifecycle_revision = self.lifecycle_revision.wrapping_add(1);
         self.gate_revision = self.gate_revision.wrapping_add(1);
         self.gate.end_session();
@@ -578,6 +593,8 @@ impl CtlState {
     /// The shell, not the agent, is in front: the agent is gone (state `ShellOnly`,
     /// activity idle, its program unknown) until it is launched again.
     pub(crate) fn agent_left(&mut self) {
+        #[cfg(feature = "questions")]
+        self.invalidate_questions();
         self.lifecycle_revision = self.lifecycle_revision.wrapping_add(1);
         self.program = AgentProgram::Unknown;
         self.gate_revision = self.gate_revision.wrapping_add(1);
@@ -645,6 +662,12 @@ impl CtlState {
         self.monitor_failed || self.monitor_overflow.load(Ordering::Acquire)
     }
 
+    pub(crate) fn monitor_stopped(&mut self) {
+        self.monitor_failed = true;
+        #[cfg(feature = "questions")]
+        self.invalidate_questions();
+    }
+
     fn session_ended(&self) -> bool {
         self.gate.ended()
             || matches!(
@@ -666,14 +689,21 @@ impl CtlState {
     ) -> (TicketId, Option<AbortReason>) {
         let ticket = self.next_ticket();
         let limits = self.cfg.limits;
+        #[cfg(feature = "questions")]
+        let (answer_jobs, answer_bytes) = self
+            .questions
+            .admitted_bytes()
+            .map_or((0, 0), |bytes| (1, bytes));
+        #[cfg(not(feature = "questions"))]
+        let (answer_jobs, answer_bytes) = (0, 0);
         let reason = if self.disposed {
             Some(AbortReason::Disposed)
         } else if self.session_ended() || self.monitor_unavailable() {
             Some(AbortReason::NotConnected)
         } else if largest > limits.max_message_bytes || bytes > limits.max_pending_bytes {
             Some(AbortReason::InputTooLarge)
-        } else if self.admissions.len() >= limits.max_pending_jobs
-            || bytes > limits.max_pending_bytes - self.pending_bytes
+        } else if self.admissions.len() + answer_jobs >= limits.max_pending_jobs
+            || bytes > limits.max_pending_bytes - self.pending_bytes - answer_bytes
         {
             Some(AbortReason::QueueFull)
         } else {
@@ -689,6 +719,12 @@ impl CtlState {
         if let Some(bytes) = self.admissions.remove(&ticket) {
             self.pending_bytes -= bytes;
         }
+    }
+
+    #[cfg(feature = "questions")]
+    pub(in crate::agent) fn answer_room(&self, bytes: usize) -> bool {
+        self.admissions.len() < self.cfg.limits.max_pending_jobs
+            && bytes <= self.cfg.limits.max_pending_bytes - self.pending_bytes
     }
 
     /// Keeps teardown independent of the job thread, including host callbacks.
@@ -743,6 +779,8 @@ impl CtlState {
     /// so ticket wakers and host-owned destructors run outside the state lock.
     pub(crate) fn dispose(&mut self) -> (Vec<Job>, Vec<Resolution>) {
         self.disposed = true;
+        #[cfg(feature = "questions")]
+        self.invalidate_questions();
         self.commit = Commit::Idle;
         let resolutions = self
             .resolutions
@@ -754,7 +792,7 @@ impl CtlState {
         let tickets: Vec<TicketId> = self
             .disposed_running
             .into_iter()
-            .chain(queued.iter().map(Job::ticket))
+            .chain(queued.iter().filter_map(Job::ticket))
             .collect();
         for ticket in tickets {
             self.publish(Event::Delivery {
@@ -1312,19 +1350,24 @@ impl Controller {
     /// Never called with the lock held.
     fn perform(&self, actions: Vec<Action>) {
         let id = self.cfg.id;
+        let mut may_write = true;
         for action in actions {
             match action {
                 Action::Write(bytes) => {
-                    if self.read(|st| st.cancel_reason().is_some()) {
-                        break;
+                    if !may_write || self.read(|st| st.cancel_reason().is_some()) {
+                        continue;
                     }
                     if let Err(e) = self.term.write(&bytes) {
                         log::debug!("[agent-link:{id}] controller write failed: {e}");
                         self.update(|st, _| st.control_write_failed());
                         // Remaining writes were decided using the failed control input.
-                        break;
+                        may_write = false;
                     }
                 }
+                #[cfg(feature = "questions")]
+                Action::EndAnswer(ticket, error) => ticket.finish(Err(error)),
+                #[cfg(feature = "questions")]
+                Action::ReleaseQuestions(source) => drop(source),
                 Action::Log(level, line) => log::log!(level, "[agent-link:{id}] {line}"),
             }
         }
@@ -1337,7 +1380,13 @@ impl Controller {
             Event::Delivery { ticket, .. } => Some(*ticket),
             _ => None,
         };
+        #[cfg(feature = "questions")]
+        let question = matches!(event, Event::Question { .. } | Event::QuestionClosed { .. });
         self.term.publish(event);
+        #[cfg(feature = "questions")]
+        if question {
+            self.lock().questions.event_published();
+        }
         if let Some(ticket) = ticket {
             self.release_delivery(ticket);
         }
@@ -1383,6 +1432,13 @@ impl Controller {
     /// receiver capacity, and nothing can overtake an unfinished earlier fanout.
     pub(crate) fn dispose(&self) {
         let (jobs, resolutions) = self.update_quietly(|st, _| st.dispose());
+        #[cfg(feature = "questions")]
+        {
+            let ticket = self.lock().questions.take_ticket();
+            if let Some(ticket) = ticket {
+                ticket.finish(Err(super::questions::AnswerError::NotOpen));
+            }
+        }
         for resolution in resolutions {
             resolution.resolve(DeliveryOutcome::Aborted(AbortReason::Disposed));
         }

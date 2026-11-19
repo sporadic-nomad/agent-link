@@ -231,6 +231,22 @@ impl AgentProfile for ClaudeProfile {
             rpc_launch: Support::Supported,
             login_check: Support::Supported,
             evidence: &[
+                #[cfg(feature = "questions")]
+                Evidence {
+                    operation: "interactive question tool call and result",
+                    kind: EvidenceKind::CapturedTranscript,
+                    cli_version: Some("2.1.296"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/questions/claude-2.1.296.jsonl",
+                },
+                #[cfg(feature = "questions")]
+                Evidence {
+                    operation: "interactive question answer keys",
+                    kind: EvidenceKind::LiveCheck,
+                    cli_version: Some("2.1.296"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/questions/README.md",
+                },
                 Evidence {
                     operation: "question dialog recognition",
                     kind: EvidenceKind::CapturedTerminal,
@@ -258,6 +274,25 @@ impl AgentProfile for ClaudeProfile {
         }
     }
 
+    #[cfg(feature = "questions")]
+    fn question_shown(
+        &self,
+        screen: &str,
+        pending: &crate::agent::questions::PendingQuestion,
+    ) -> bool {
+        use crate::agent::questions::providers::{self, Provider};
+        providers::shown(Provider::Claude, screen, pending)
+    }
+    #[cfg(feature = "questions")]
+    fn answer_keys(
+        &self,
+        screen: &str,
+        pending: &crate::agent::questions::PendingQuestion,
+        answers: &[crate::agent::questions::Answer],
+    ) -> Result<Vec<crate::agent::questions::KeyStep>, crate::agent::questions::AnswerError> {
+        use crate::agent::questions::providers::{self, Provider};
+        providers::keys(Provider::Claude, screen, pending, answers)
+    }
     fn id(&self) -> &str {
         "claude"
     }

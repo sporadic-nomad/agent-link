@@ -120,6 +120,27 @@ When two readers sample a peer on opposite sides of a session switch, the reader
 
 ---
 
+## PTY questions
+
+Enable the optional `questions` feature, choose one source for the running `AgentTerminal` and continue draining its ordinary PTY event receiver.
+
+- `observe_questions()` uses the profile’s screen parser. Its first observed frame establishes a baseline. A newly drawn, complete Cursor shell approval includes the visible command, working directory and both action labels. Wrapped commands, shortened paths, partial redraws and menus that offer persistent permission changes stay at the terminal.
+- `observe_transcript_questions(Arc<TurnReceiver>)` observes fresh Claude `AskUserQuestion` records in a verified direct PTY. Codex Plan-mode `request_user_input` uses the verified Codex transcript receiver. The reader must belong to this terminal. A call must follow an attributable fresh prompt. The currently displayed question must agree with its recorded prompt and all visible option labels. An unobservable tool call can still block ordinary delivery through `question_dialog`.
+- `observe_feed_questions(Arc<dyn QuestionFeed>)` reads the current, ordered requests from a host-authenticated transport pinned to this PTY and provider conversation. A feed supplies up to 64 pending requests and rechecks the exact request and its dispatch guard before a mutation. A failed or partial poll withholds new decisions. Reattach the feed or transcript source when the agent or conversation resets.
+- Custom profiles can implement `question_on_screen`, `question_shown` and `answer_keys`. The default hooks withhold requests or return `Unsupported`. Callbacks run outside controller locks. A `KeyStep::when` predicate checks the exact selection, page or editor draft before its write.
+
+`Event::Question` carries the terminal-local `QuestionId` and the complete ordered items. Keep the ID with the displayed form. Supply one `Answer::Choice`, `Choices` or `Text` per item to `term.answer_question(qid, answers)`. Indices start at zero. The synchronous call admits a job without waiting for child or network I/O. The repeatable `AnswerTicket` supports `try_result`, `wait(timeout)` and, with `tokio`, `result().await`. An `Ok(())` means the complete key sequence entered the PTY input queue or the bound server accepted the answer. Wait for the closing event to remove the form.
+
+`Event::QuestionClosed` carries the same ID. `Host` means an accepted host answer preceded observed disappearance. `Desk` denotes a question that left its observed screen without a host answer. `Gone` covers loss of the source or foreground, observer stop, an uncertain mutation and a feed request withdrawn by an unknown actor. `stop_questions()` invalidates the open ID. Events at teardown are best effort. A callback can keep its detached thread until it returns. Disposal resolves outstanding tickets independently.
+
+Answers share the delivery job and byte limits. Only one answer may be outstanding per terminal. A PTY answer sanitizes control characters, checks a quiet screen, verifies its foreground owner and checks the question again at each key. Literal text sent through a feed retains its original contents. Each of at most 64 key steps must fit the PTY write bound and its settle delay must be at most five seconds. If a partial write or network mutation could have been accepted, inspect the terminal after `Unconfirmed`. The library disables a second dispatch to that question ID.
+
+A dialog can carry up to 16 items, 32 options per item, 8 KiB per field and 64 KiB overall. Provider IDs are limited to 128 bytes. The observer withholds oversized or ambiguous dialogs whole. Eight reserved event slots include queued and in-flight question publications. Screen disappearance must persist across samples for 300 ms. Screen changes, reattachment and launch changes fence callbacks. A proven foreground owner is required for both relay and mutation. Windows has no captured native question evidence. Debug formatting omits prompts, choices, provider IDs, command text, answer strings and key bytes.
+
+Native recordings on macOS arm64 cover Claude Code 2.1.296 single-choice, multiple-choice, multiple-item review and a one-line text answer, and Codex 0.154.0 Plan-mode choices, multiple pages and one-line notes. Cursor 2026.11.13-eacade1’s packaged decision view and keyboard handler were exercised in a real PTY with instrumented callbacks. Its `y` selects “Run (once)” and `n` begins a request for alternative instructions. The fixture did not run the proposed command. [Question fixtures](../tests/fixtures/questions/README.md)
+
+Use the native adapter’s approval callback for structured stdio requests. [Native approvals](rpc-and-native-adapters.md#native-approval-callbacks-approvals)
+
 ## Verified Message Delivery (`send`, `SendOptions`, `Ticket`)
 
 ### `SendOptions`

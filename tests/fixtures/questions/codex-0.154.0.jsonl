@@ -1,0 +1,2 @@
+{"type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\": [{\"id\": \"fixture_0\", \"header\": \"Color\", \"question\": \"Which color should the sample use?\", \"options\": [{\"label\": \"Blue\", \"description\": \"Use a cool shade\"}, {\"label\": \"Amber\", \"description\": \"Use a warm shade\"}]}]}","call_id":"fc_1"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"fc_1","output":"{\"answers\":{\"fixture_0\":{\"answers\":[\"None of the above\",\"user_note: Green\"]}}}"}}

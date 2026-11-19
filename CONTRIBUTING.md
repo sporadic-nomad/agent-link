@@ -50,6 +50,8 @@ public admission contract. The native opt-in driver uses a loopback Messages pee
 and a pinned CLI on macOS arm64. [Capture and reproduction](tests/fixtures/transcripts/claude-2.1.296/README.md)
 
 ```sh
+cargo test --locked --no-default-features --features questions --lib agent::questions:: -- --test-threads=1
+cargo test --locked --no-default-features --features questions,test-support --test pty_questions -- --test-threads=1
 cargo test --locked --no-default-features --features turns --lib agent::profiles::turns::claude -- --test-threads=1
 cargo test --locked --no-default-features --features turns --lib agent::turns:: -- --test-threads=1
 cargo test --locked --no-default-features --features turns --test claude_turns --test compatibility -- --test-threads=1

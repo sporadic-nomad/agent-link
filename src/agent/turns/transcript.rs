@@ -270,6 +270,11 @@ impl Opened {
         Ok(version)
     }
 
+    #[cfg(feature = "questions")]
+    pub(super) fn observed_len(&self) -> Result<u64, Gap> {
+        Ok(self.version()?.length)
+    }
+
     /// A writer sample may have blocked while the named file was replaced.
     pub(super) fn confirm(&self, launch: &Launch, current: Binding) -> Result<(), Gap> {
         if current != self.binding {

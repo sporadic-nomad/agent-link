@@ -50,6 +50,8 @@ pub struct FakeProfile {
     id: &'static str,
     program: String,
     args: Vec<String>,
+    #[cfg(feature = "questions")]
+    question_reads: Option<crossbeam_channel::Sender<()>>,
 }
 
 impl FakeProfile {
@@ -66,7 +68,15 @@ impl FakeProfile {
             id: "fake",
             program,
             args,
+            #[cfg(feature = "questions")]
+            question_reads: None,
         }
+    }
+
+    #[cfg(feature = "questions")]
+    pub fn with_question_reads(mut self, signal: crossbeam_channel::Sender<()>) -> Self {
+        self.question_reads = Some(signal);
+        self
     }
 
     fn has_arg(&self, arg: &str) -> bool {
@@ -98,6 +108,8 @@ pub fn unlaunchable_profile() -> Arc<dyn AgentProfile> {
         id: "fake-unlaunchable",
         program: "false".into(),
         args: Vec::new(),
+        #[cfg(feature = "questions")]
+        question_reads: None,
     })
 }
 
@@ -136,6 +148,10 @@ impl AgentProfile for FakeProfile {
     }
 
     fn question_dialog(&self, screen: &str) -> bool {
+        #[cfg(feature = "questions")]
+        if let Some(tx) = &self.question_reads {
+            let _ = tx.try_send(());
+        }
         dialog_at_bottom(
             screen,
             24,
@@ -143,6 +159,38 @@ impl AgentProfile for FakeProfile {
             &["1. continue"],
             QUESTION_FOOTER,
         )
+    }
+
+    #[cfg(feature = "questions")]
+    fn question_on_screen(
+        &self,
+        screen: &str,
+    ) -> Option<agent_link::agent::questions::PendingQuestion> {
+        use agent_link::agent::questions::{PendingQuestion, QuestionItem};
+        screen.contains("1. Continue").then(|| {
+            PendingQuestion::new(
+                "",
+                vec![QuestionItem::new(
+                    "Fake",
+                    "Continue the fixture?",
+                    vec!["Continue".into()],
+                )],
+            )
+        })
+    }
+    #[cfg(feature = "questions")]
+    fn answer_keys(
+        &self,
+        _: &str,
+        _: &agent_link::agent::questions::PendingQuestion,
+        answers: &[agent_link::agent::questions::Answer],
+    ) -> Result<Vec<agent_link::agent::questions::KeyStep>, agent_link::agent::questions::AnswerError>
+    {
+        use agent_link::agent::questions::{Answer, AnswerError, KeyStep};
+        match answers {
+            [Answer::Choice(0)] => Ok(vec![KeyStep::new(b"1", std::time::Duration::ZERO)]),
+            _ => Err(AnswerError::Unsupported),
+        }
     }
 
     fn launchers(&self) -> &'static [&'static str] {

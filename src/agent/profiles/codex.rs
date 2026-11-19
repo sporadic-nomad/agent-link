@@ -162,6 +162,22 @@ impl AgentProfile for CodexProfile {
             rpc_launch: Support::Supported,
             login_check: Support::Supported,
             evidence: &[
+                #[cfg(feature = "questions")]
+                Evidence {
+                    operation: "interactive question tool call and result",
+                    kind: EvidenceKind::CapturedTranscript,
+                    cli_version: Some("0.154.0"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/questions/codex-0.154.0.jsonl",
+                },
+                #[cfg(feature = "questions")]
+                Evidence {
+                    operation: "interactive question answer keys",
+                    kind: EvidenceKind::LiveCheck,
+                    cli_version: Some("0.154.0"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/questions/README.md",
+                },
                 Evidence {
                     operation: "interactive rollout final reply parsing",
                     kind: EvidenceKind::CapturedTranscript,
@@ -212,6 +228,25 @@ impl AgentProfile for CodexProfile {
         }
     }
 
+    #[cfg(feature = "questions")]
+    fn question_shown(
+        &self,
+        screen: &str,
+        pending: &crate::agent::questions::PendingQuestion,
+    ) -> bool {
+        use crate::agent::questions::providers::{self, Provider};
+        providers::shown(Provider::Codex, screen, pending)
+    }
+    #[cfg(feature = "questions")]
+    fn answer_keys(
+        &self,
+        screen: &str,
+        pending: &crate::agent::questions::PendingQuestion,
+        answers: &[crate::agent::questions::Answer],
+    ) -> Result<Vec<crate::agent::questions::KeyStep>, crate::agent::questions::AnswerError> {
+        use crate::agent::questions::providers::{self, Provider};
+        providers::keys(Provider::Codex, screen, pending, answers)
+    }
     fn id(&self) -> &str {
         "codex"
     }

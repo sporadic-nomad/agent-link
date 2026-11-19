@@ -79,6 +79,14 @@ impl AgentProfile for CursorProfile {
                     platform: Some("macos-aarch64"),
                     source: "tests/fixtures/transcripts/cursor-2026.11.13-eacade1/README.md",
                 },
+                #[cfg(feature = "questions")]
+                Evidence {
+                    operation: "shell command approval relay and decision key intents",
+                    kind: EvidenceKind::LiveCheck,
+                    cli_version: Some("2026.11.13-eacade1"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/questions/README.md",
+                },
                 Evidence {
                     operation: "trust screen recognition",
                     kind: EvidenceKind::CapturedTerminal,
@@ -97,6 +105,29 @@ impl AgentProfile for CursorProfile {
         }
     }
 
+    #[cfg(feature = "questions")]
+    fn question_on_screen(&self, screen: &str) -> Option<crate::agent::questions::PendingQuestion> {
+        crate::agent::questions::providers::cursor(screen)
+    }
+    #[cfg(feature = "questions")]
+    fn question_shown(
+        &self,
+        screen: &str,
+        pending: &crate::agent::questions::PendingQuestion,
+    ) -> bool {
+        use crate::agent::questions::providers::{self, Provider};
+        providers::shown(Provider::Cursor, screen, pending)
+    }
+    #[cfg(feature = "questions")]
+    fn answer_keys(
+        &self,
+        screen: &str,
+        pending: &crate::agent::questions::PendingQuestion,
+        answers: &[crate::agent::questions::Answer],
+    ) -> Result<Vec<crate::agent::questions::KeyStep>, crate::agent::questions::AnswerError> {
+        use crate::agent::questions::providers::{self, Provider};
+        providers::keys(Provider::Cursor, screen, pending, answers)
+    }
     fn id(&self) -> &str {
         "cursor"
     }

@@ -106,6 +106,10 @@ impl Drop for Chunk {
 }
 
 impl Input {
+    #[cfg(feature = "questions")]
+    pub(super) fn max_write_bytes(&self) -> usize {
+        self.limits.max_write_bytes
+    }
     pub(crate) fn new(limits: InputLimits) -> (Self, InputReceiver) {
         let (tx, rx) = bounded(limits.max_pending_chunks);
         let used = Arc::default();

@@ -14,6 +14,10 @@ use super::transcript::Cursor;
 use super::{AgentState, Controller, Gap, Launch, Limits, Opened, Reply, Status, Witness};
 
 pub(super) struct Batch {
+    #[cfg(feature = "questions")]
+    pub(super) question: Option<Arc<crate::agent::questions::PendingQuestion>>,
+    #[cfg(feature = "questions")]
+    pub(super) complete: bool,
     replies: VecDeque<Reply>,
     bytes: usize,
 }
@@ -21,6 +25,10 @@ pub(super) struct Batch {
 impl Batch {
     pub(super) fn new() -> Self {
         Self {
+            #[cfg(feature = "questions")]
+            question: None,
+            #[cfg(feature = "questions")]
+            complete: false,
             replies: VecDeque::new(),
             bytes: 0,
         }
@@ -35,6 +43,15 @@ pub(super) enum Position {
 }
 
 impl Position {
+    // Only the append-only Claude and Codex transcripts contain question records.
+    #[cfg(feature = "questions")]
+    fn append_cursor(&self) -> Option<Cursor> {
+        match self {
+            Self::Append(cursor) => Some(*cursor),
+            Self::Snapshot(_) => None,
+        }
+    }
+
     fn confirm(&self, opened: &Opened) -> Result<bool, Gap> {
         match self {
             Self::Append(c) => c.confirm(opened).map(|()| true),
@@ -214,6 +231,11 @@ impl Stream {
             if !q.status.live() {
                 return false;
             }
+            #[cfg(feature = "questions")]
+            {
+                q.pending.question = batch.question.take();
+                q.pending.complete = batch.complete;
+            }
             q.pending.replies.append(&mut batch.replies);
             q.pending.bytes += batch.bytes;
             q.cursor = Some(cursor);
@@ -250,6 +272,75 @@ impl TurnReceiver {
     /// Coalesced status. Samples local lifecycle and lease state without filesystem I/O.
     pub fn status(&self) -> super::TurnStatus {
         self.stream.status()
+    }
+
+    #[cfg(feature = "questions")]
+    pub(in crate::agent) fn belongs_to(&self, controller: &Arc<Controller>) -> bool {
+        self.stream
+            .ctl
+            .upgrade()
+            .is_some_and(|ctl| Arc::ptr_eq(&ctl, controller))
+            && self.status().live()
+    }
+
+    #[cfg(feature = "questions")]
+    pub(in crate::agent) fn pending_question(
+        &self,
+    ) -> Result<
+        Option<Arc<crate::agent::questions::PendingQuestion>>,
+        crate::agent::questions::AnswerError,
+    > {
+        use crate::agent::questions::AnswerError;
+        let Some((question, opened, cursor, complete)) = self.stream.access(|q| {
+            if !q.status.live() {
+                return Err(AnswerError::NotOpen);
+            }
+            Ok(q.pending
+                .question
+                .clone()
+                .zip(q.opened.upgrade())
+                .zip(q.cursor.as_ref().and_then(Position::append_cursor))
+                .map(|((qst, opened), cursor)| (qst, opened, cursor, q.pending.complete)))
+        })?
+        else {
+            return Ok(None);
+        };
+        if !complete {
+            return Err(AnswerError::Changed);
+        }
+        let launch = self.launch.upgrade().ok_or(AnswerError::NotOpen)?;
+        let witness = self.witness.upgrade().ok_or(AnswerError::NotOpen)?;
+        let checked = witness
+            .current(&launch)
+            .and_then(|cur| opened.confirm(&launch, cur))
+            .and_then(|()| cursor.confirm(&opened))
+            .and_then(|()| opened.observed_len());
+        let length = checked.map_err(|reason| {
+            self.stream.finish(Status::Gap(reason));
+            AnswerError::NotOpen
+        })?;
+        if length != cursor.offset {
+            return Err(AnswerError::Changed);
+        }
+        if !self.stream.sample_terminal(true) {
+            return Err(AnswerError::NotOpen);
+        }
+        self.stream.access(|q| {
+            if !q.status.live() {
+                return Err(AnswerError::NotOpen);
+            }
+            if !q.pending.complete
+                || q.cursor.as_ref().and_then(Position::append_cursor).is_none_or(|c| c.offset != cursor.offset)
+                || !q
+                    .pending
+                    .question
+                    .as_ref()
+                    .is_some_and(|p| Arc::ptr_eq(p, &question))
+            {
+                return Err(AnswerError::Changed);
+            }
+            Ok(Some(question))
+        })
     }
 
     /// Pull one queued reply after sampling the writer, file identity, cursor and terminal.

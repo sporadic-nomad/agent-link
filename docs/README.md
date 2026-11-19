@@ -23,6 +23,7 @@ Pick the smallest layer that fits how you talk to the agent:
 | Raw shell or CLI on a PTY | `pty::Terminal` | always on | [PTY & Screen](pty-and-screen.md) |
 | Headless terminal model & signals | `screen::Vt100Model`, `ScreenSnapshot` | `screen` (default) | [PTY & Screen](pty-and-screen.md#headless-screen-model-screen-feature) |
 | Interactive agent CLI with startup & verified paste | `agent::AgentTerminal`, `ProfileRegistry` | `agent` (default) | [Agents & Delivery](agents-and-delivery.md) |
+| Relay an interactive question and answer its current ID | `agent::questions::AnswerTicket` | `questions` | [PTY questions](agents-and-delivery.md#pty-questions) |
 | Final replies from an exclusive-writer Claude PTY | `agent::turns::TurnReceiver` | `turns` | [Claude PTY final replies](agents-and-delivery.md#claude-pty-final-replies) |
 | Attach application CLI/MCP tools to an agent run | `tools::AgentTools` | `tools` | [Application Tools](application-tools.md) |
 | Check whether CLIs are installed & signed in | `probe::probe_agents`, `probe_agents_detailed` | `probe` | [Permissions & Probes](permissions-and-probes.md) |
@@ -64,6 +65,7 @@ For development, use `{ path = "../agent-link" }` instead of the version.
 | *(none)* | — | — | `portable-pty`, `crossbeam-channel`, `log`, `thiserror`, `libc` (Unix) / `windows-sys` (Windows) | Core PTY, environment, shell, identity, path resolution, process helpers |
 | `screen` | **yes** | — | `vt100`, `regex` | Headless terminal parser, normalized text, OSC/DEC signal tap |
 | `agent` | **yes** | `screen` | — | `AgentTerminal`, built-in CLI profiles, startup gate, verified delivery |
+| `questions` | no | `turns` | Provider JSON decoding | Interactive question events and explicit answer tickets |
 | `turns` | no | `agent` | `serde_json`, plus `rustix` and `serde` on Unix | Final replies from controlled direct Claude Code 2.1.296 sessions on macOS arm64 |
 | `tools` | no | `agent` | `serde_json`, `tempfile`, `url` | Per-run CLI/MCP attachment facade |
 | `rpc` | no | `agent` | — | `RpcChild` JSON-lines stdio transport, tracked writes, strict UTF-8 |

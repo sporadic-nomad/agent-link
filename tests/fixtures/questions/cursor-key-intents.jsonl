@@ -1,0 +1,4 @@
+{"input":"y","action":{"kind":"action","action":"approve"}}
+{"callback":"onApprove","command":"pwd"}
+{"input":"n","action":{"kind":"action","action":"propose"}}
+{"callback":"onBeginRejection","command":"pwd"}

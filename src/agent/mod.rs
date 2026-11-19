@@ -71,6 +71,8 @@ mod permissions;
 mod profile;
 pub mod profiles;
 mod proof;
+#[cfg(feature = "questions")]
+pub mod questions;
 mod settle;
 mod startup;
 mod state;

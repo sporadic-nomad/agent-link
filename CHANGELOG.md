@@ -12,7 +12,9 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   Codex emits explicit finals and Pi labels inferred replies. Cursor handles in-place
   history rewrites, distinguishes inferred from explicit completion, and makes
   mixed assistant/reasoning text an explicit opt-in.
-
+- Optional `questions` exposes interactive PTY question and close events, version-scoped
+  Claude, Codex and Cursor observation, session-bound feeds, explicitly requested
+  answer tickets and redraw, foreground and lifecycle checks at dispatch.
 - The optional `turns` feature exposes final replies from a controlled, direct Claude
   Code 2.1.296 PTY on macOS arm64. Hosts enforce one writer per session and pass a
   revocable `ExclusiveClaudeRoot`. Attachments start at verified EOF, return bounded

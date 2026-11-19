@@ -753,3 +753,41 @@ fn session_change_while_waiting_for_a_file_requires_another_attachment() {
     observed(&fresh, &file);
     assert_eq!(fresh.try_recv().unwrap().text, "after attachment");
 }
+
+#[cfg(feature = "questions")]
+#[test]
+fn verified_reader_requires_a_fresh_question_and_withholds_it_across_a_partial_result() {
+    use crate::agent::questions::AnswerError;
+    let (_lock, home) = project();
+    let peer = Peer::start(home.path(), false, false);
+    let [user, mut call, _] = peer.rows(&peer.initial, "");
+    let records: Vec<Value> = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/questions/claude-2.1.296.jsonl"
+    ))
+    .lines()
+    .map(|line| serde_json::from_str(line).unwrap())
+    .collect();
+    call["message"]["content"] = records[0]["message"]["content"].clone();
+    call["message"]["stop_reason"] = json!("tool_use");
+    let mut result = user.clone();
+    result["message"]["content"] = records[1]["message"]["content"].clone();
+    let batch = encode(&[user, call]);
+    append(&peer.file, &batch);
+    let reader = peer.attach();
+    observed(&reader, &peer.file);
+    assert!(reader.pending_question().unwrap().is_none());
+    append(&peer.file, &batch);
+    observed(&reader, &peer.file);
+    let pending = reader.pending_question().unwrap().unwrap();
+    assert_eq!(pending.questions.len(), 2);
+    assert_eq!(pending.questions[0].options, ["Blue", "Amber"]);
+    let mut result = encode(&[result]);
+    assert_eq!(result.pop(), Some(b'\n'));
+    append(&peer.file, &result);
+    observed(&reader, &peer.file);
+    assert_eq!(reader.pending_question(), Err(AnswerError::Changed));
+    append(&peer.file, b"\n");
+    observed(&reader, &peer.file);
+    assert!(reader.pending_question().unwrap().is_none());
+}

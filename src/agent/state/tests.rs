@@ -357,7 +357,7 @@ fn the_drop_publishes_disposed_for_the_running_and_the_queued_deliveries() {
     }
     // The job thread took the first one.
     let running = st.jobs.pop_front().unwrap();
-    st.running = Some(running.ticket());
+    st.running = running.ticket();
     let (queued, resolutions) = st.dispose();
     for resolution in resolutions {
         resolution.resolve(DeliveryOutcome::Aborted(AbortReason::Disposed));
@@ -497,7 +497,7 @@ fn writes(st: &mut CtlState) -> Vec<Vec<u8>> {
         .into_iter()
         .filter_map(|a| match a {
             Action::Write(bytes) => Some(bytes),
-            Action::Log(..) => None,
+            _ => None,
         })
         .collect()
 }
@@ -723,7 +723,7 @@ fn a_held_step_goes_only_to_the_shell_it_was_meant_for() {
         .into_iter()
         .map(|a| match a {
             Action::Log(_, line) => line,
-            Action::Write(bytes) => panic!("wrote {bytes:?}"),
+            unexpected => panic!("unexpected {unexpected:?}"),
         })
         .collect();
     assert_eq!(
@@ -856,7 +856,7 @@ fn a_profile_panic_logs_one_warning() {
         .filter_map(|a| match a {
             Action::Log(log::Level::Warn, line) => Some(line),
             Action::Write(bytes) => panic!("wrote {bytes:?}"),
-            Action::Log(..) => None,
+            _ => None,
         })
         .collect();
     assert_eq!(warnings.len(), 1, "{warnings:?}");

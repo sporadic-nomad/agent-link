@@ -180,6 +180,10 @@ fn check_id(id: &str) -> Result<(), Gap> {
 }
 
 impl Parser for ClaudeParser {
+    #[cfg(feature = "questions")]
+    fn question_record(&self, line: &[u8]) -> crate::agent::questions::TranscriptChange {
+        crate::agent::questions::provider_record("claude", line)
+    }
     fn record(&mut self, binding: &Binding, line: &[u8], limit: usize) -> Result<Record, Gap> {
         let json = std::str::from_utf8(line).map_err(|_| Gap::Format)?;
         let tag: Tag = object(json)?;

@@ -40,7 +40,7 @@ does not share the daemon mutation IPC. Supervisor builds require a C compiler f
 - Rust 2024, minimum Rust version 1.85, MIT license. Check `Cargo.toml` for the current
   version and feature definitions.
 - Default features: `screen` and `agent`. Optional integrations: `rpc`, `codex`, `acp`,
-  `claude`, `probe`, `tools`, `tokio`, `turns`, `transcript`, `observers` and `approvals`. `test-support`
+  `claude`, `probe`, `tools`, `tokio`, `turns`, `questions`, `transcript`, `observers` and `approvals`. `test-support`
   is development-only and enables `agent-link-fake-agent`.
 - PTY/process operations use dedicated threads. Tokio provides optional adapters;
   keep the core usable without an async runtime.
@@ -111,6 +111,7 @@ that merely reproduce an implementation expression or unnecessarily expose priva
 | Input admission or overload | Queue unit tests; `tests/input_limits.rs`, `tests/profile_isolation.rs` |
 | Agent startup, ownership, delivery or reset | State/startup unit tests; `tests/agent_startup.rs`, `tests/agent_delivery.rs`, `tests/agent_delivery_owner.rs`, `tests/agent_strict.rs`, `tests/agent_reset.rs` |
 | Isolated Codex, Pi and Cursor PTY turn observation | `agent::profiles::turns::isolated`, `tests/isolated_turns.rs`, `tests/compatibility.rs` |
+| PTY question observation and answers | `agent::questions`, `tests/pty_questions.rs`, `tests/fixtures/questions/` |
 | Claude PTY turn observation | `agent::turns`, `agent::profiles::turns::claude`, `tests/claude_turns.rs`, `tests/compatibility.rs` |
 | RPC framing, errors or privacy | `src/rpc/tests.rs`, framing/input unit tests, `tests/rpc_roundtrip.rs` |
 | Native adapter lifecycle or protocol | `src/codex/tests.rs`, `tests/codex_adapter.rs`, `src/claude/tests.rs`; synthetic pinned wire projections in `tests/fixtures/codex-app-server/` |

@@ -156,6 +156,8 @@ impl Runner {
                     && self.ctl.read(|st| self.observation_current(&obs, st))
                 {
                     self.write(b"\r")?;
+                    #[cfg(feature = "questions")]
+                    self.ctl.update(|st, _| st.invalidate_questions());
                     return Ok(ResetBaseline {
                         rows: Leftover::new(obs.screen.rows),
                         lifecycle: obs.lifecycle,

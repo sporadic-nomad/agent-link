@@ -373,6 +373,26 @@ pub enum Event {
         /// The new activity.
         state: crate::agent::Activity,
     },
+    /// An opt-in PTY question observer saw a complete, currently open question.
+    #[cfg(feature = "questions")]
+    Question {
+        /// The terminal.
+        id: SessionId,
+        /// The appearance to pass to `answer_question`.
+        qid: crate::agent::questions::QuestionId,
+        /// The complete question. Shared storage keeps subscriber clones bounded.
+        questions: std::sync::Arc<[crate::agent::questions::QuestionItem]>,
+    },
+    /// A previously reported question closed. Final events at teardown are best effort.
+    #[cfg(feature = "questions")]
+    QuestionClosed {
+        /// The terminal.
+        id: SessionId,
+        /// The appearance that closed.
+        qid: crate::agent::questions::QuestionId,
+        /// Observed cause.
+        by: crate::agent::questions::ClosedBy,
+    },
     /// A delivery started with [`AgentTerminal::send`](crate::agent::AgentTerminal::send)
     /// (or `reset`, `reset_and_send`) ended (feature `agent`; also without a profile): the
     /// same outcome its [`Ticket`](crate::agent::Ticket) holds. One per ticket, in the
@@ -407,6 +427,8 @@ impl Event {
     /// The session the event belongs to.
     pub fn id(&self) -> SessionId {
         match self {
+            #[cfg(feature = "questions")]
+            Self::Question { id, .. } | Self::QuestionClosed { id, .. } => *id,
             Self::Output { id, .. }
             | Self::Exit { id, .. }
             | Self::Title { id, .. }

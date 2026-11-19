@@ -227,6 +227,8 @@ pub(crate) fn paste_text(text: &str) -> (String, usize) {
 
 /// A queued delivery and where its outcome goes.
 pub(crate) enum Job {
+    #[cfg(feature = "questions")]
+    Answer(super::questions::AnswerJob),
     Message {
         job: MessageJob,
         resolver: Resolver,
@@ -240,10 +242,12 @@ pub(crate) enum Job {
 }
 
 impl Job {
-    pub(crate) fn ticket(&self) -> TicketId {
+    pub(crate) fn ticket(&self) -> Option<TicketId> {
         match self {
-            Job::Message { job, .. } => job.ticket,
-            Job::ResetAndSend { message, .. } => message.ticket,
+            Job::Message { job, .. } => Some(job.ticket),
+            Job::ResetAndSend { message, .. } => Some(message.ticket),
+            #[cfg(feature = "questions")]
+            Job::Answer(_) => None,
         }
     }
 }
@@ -272,7 +276,11 @@ pub(crate) enum Owner {
 /// The owner a job goes by. `shell_in_front` is a trusted shell answer; `program`
 /// identifies a foreground program only when the configured policy trusts the answer.
 /// Unknown or untrusted ownership is never inferred from a launch or screen contents.
-fn job_owner(shell_in_front: bool, program: Option<ProgramId>, agent: AgentProgram) -> Owner {
+pub(super) fn job_owner(
+    shell_in_front: bool,
+    program: Option<ProgramId>,
+    agent: AgentProgram,
+) -> Owner {
     if shell_in_front {
         return Owner::Shell;
     }
@@ -346,7 +354,7 @@ pub(crate) fn spawn(ctl: Arc<Controller>) -> Result<JoinHandle<()>> {
 pub(crate) struct Runner {
     pub(crate) ctl: Arc<Controller>,
     /// Profile code panicked on this thread once: it is not called here again.
-    profile_failed: bool,
+    pub(super) profile_failed: bool,
 }
 
 /// Owned rows and the controller/render revisions they were read against.
@@ -379,7 +387,7 @@ impl Runner {
     fn next_job(&self) -> Option<Job> {
         self.ctl.wait_for(|st| match st.jobs.pop_front() {
             Some(job) => {
-                st.running = Some(job.ticket());
+                st.running = job.ticket();
                 Some(Some(job))
             }
             None if st.disposed => Some(None),
@@ -388,11 +396,12 @@ impl Runner {
     }
 
     fn run(&mut self, job: Job) {
-        let ticket = job.ticket();
-        let (outcome, resolver) = match job {
+        let (ticket, outcome, resolver) = match job {
             Job::Message { mut job, resolver } => {
+                let ticket = job.ticket;
                 self.trace_start(&job, "start");
                 (
+                    ticket,
                     self.guarded(ticket, |r| r.process_message(&mut job, None)),
                     resolver,
                 )
@@ -402,10 +411,16 @@ impl Runner {
                 mut message,
                 resolver,
             } => {
+                let ticket = reset.ticket;
                 let outcome = self.guarded(ticket, |r| {
                     r.process_reset_and_send(&mut reset, &mut message)
                 });
-                (outcome, resolver)
+                (ticket, outcome, resolver)
+            }
+            #[cfg(feature = "questions")]
+            Job::Answer(job) => {
+                self.run_answer(job);
+                return;
             }
         };
         self.resolve(ticket, &resolver, outcome);
@@ -1005,7 +1020,7 @@ impl Runner {
 
     /// Evaluate callbacks outside the controller lock, then validate the render and
     /// lifecycle again. An explicit reset only admits observations after its first Enter.
-    pub(super) fn profile_read<T: Copy>(
+    pub(super) fn profile_read<T>(
         &mut self,
         after_reset: Option<&ResetBaseline>,
         call: impl FnOnce(&dyn AgentProfile, &str, &Leftover) -> T,
@@ -1014,7 +1029,7 @@ impl Runner {
         self.read_observation(observation.as_ref(), after_reset, call)
     }
 
-    pub(super) fn read_observation<T: Copy>(
+    pub(super) fn read_observation<T>(
         &mut self,
         observation: Option<&Observation>,
         after_reset: Option<&ResetBaseline>,

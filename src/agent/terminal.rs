@@ -197,11 +197,11 @@ pub enum AgentState {
 ///   (see [`Terminal`]); use `kill_async` from async code. No crate thread is joined.
 pub struct AgentTerminal {
     term: Terminal,
-    ctl: Arc<Controller>,
+    pub(super) ctl: Arc<Controller>,
     #[cfg(all(unix, any(test, feature = "turns")))]
     turns: Option<super::turns::Slot>,
     /// Serializes ticket assignment through enqueue, without holding the state lock.
-    queueing: Mutex<()>,
+    pub(super) queueing: Mutex<()>,
     // Dropped after the terminal; never run filesystem cleanup under controller locks.
     #[cfg(feature = "tools")]
     _tools: Option<crate::tools::ToolAttachment>,
@@ -1190,7 +1190,7 @@ mod limit_tests {
             assert!(first.id() < second.id());
             assert_eq!(
                 term.ctl
-                    .read(|st| st.jobs.iter().map(Job::ticket).collect::<Vec<_>>()),
+                    .read(|st| st.jobs.iter().filter_map(Job::ticket).collect::<Vec<_>>()),
                 vec![first.id(), second.id()]
             );
         });

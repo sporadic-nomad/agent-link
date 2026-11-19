@@ -239,6 +239,8 @@ impl TurnState {
 }
 
 struct Framer {
+    #[cfg(feature = "questions")]
+    question: Option<Arc<crate::agent::questions::PendingQuestion>>,
     limits: Limits,
     partial: Vec<u8>,
     skip: bool,
@@ -248,6 +250,8 @@ struct Framer {
 impl Framer {
     fn new(limits: Limits, skip: bool) -> Self {
         Self {
+            #[cfg(feature = "questions")]
+            question: None,
             limits,
             partial: Vec::with_capacity(limits.line_bytes),
             skip,
@@ -308,7 +312,30 @@ impl Framer {
                 text
             };
             let record = parser.record(binding, line, self.limits.reply_bytes)?;
+            #[cfg(feature = "questions")]
+            match &record {
+                Record::Ignore if self.turn.armed => {
+                    use crate::agent::questions::TranscriptChange;
+                    match parser.question_record(line) {
+                        TranscriptChange::Keep => {}
+                        TranscriptChange::Clear => self.question = None,
+                        TranscriptChange::Resolved(id) => {
+                            if self.question.as_ref().is_some_and(|q| q.id == id) {
+                                self.question = None;
+                            }
+                        }
+                        TranscriptChange::Open(q) => self.question = Some(Arc::new(q)),
+                    }
+                }
+                Record::Ignore => {}
+                Record::User | Record::End(_) | Record::Next(_) => self.question = None,
+            }
             self.turn.apply(record, &mut replies, stream)?;
+        }
+        #[cfg(feature = "questions")]
+        {
+            replies.question = self.question.clone();
+            replies.complete = complete == used;
         }
         Ok(Candidate {
             used,

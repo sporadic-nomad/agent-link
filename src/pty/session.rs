@@ -500,6 +500,13 @@ impl TerminalHandle {
         self.inner.id
     }
 
+    #[cfg(feature = "questions")]
+    pub(crate) fn max_write_bytes(&self) -> usize {
+        lock(&self.inner.writer)
+            .as_ref()
+            .map_or(0, Input::max_write_bytes)
+    }
+
     pub(crate) fn write(&self, bytes: &[u8]) -> Result<()> {
         self.inner.write(bytes)
     }

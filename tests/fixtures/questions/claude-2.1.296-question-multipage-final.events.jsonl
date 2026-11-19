@@ -1,0 +1,16 @@
+{"t_ms":233,"kind":"title","value":"✳ Claude Code"}
+{"t_ms":281,"kind":"query","which":"xtversion","answered":false}
+{"t_ms":281,"kind":"query","which":"kitty_keyboard","answered":false}
+{"t_ms":281,"kind":"query","which":"other","answered":false,"raw":"7501;?"}
+{"t_ms":281,"kind":"query","which":"da1","answered":true}
+{"t_ms":281,"kind":"write","value":"\\e[?1\\;2c","source":"reply"}
+{"t_ms":1603,"kind":"write","value":"\\e[200~Survey fixture\\e[201~","source":"script"}
+{"t_ms":2052,"kind":"write","value":"\\r","source":"script"}
+{"t_ms":2116,"kind":"title","value":"◐ Claude Code"}
+{"t_ms":2165,"kind":"title","value":"✳ Claude Code"}
+{"t_ms":3602,"kind":"write","value":"2","source":"script"}
+{"t_ms":4051,"kind":"write","value":"1","source":"script"}
+{"t_ms":4604,"kind":"write","value":"\\r","source":"script"}
+{"t_ms":4642,"kind":"title","value":"◐ Claude Code"}
+{"t_ms":4666,"kind":"title","value":"✳ Claude Code"}
+{"t_ms":5756,"kind":"exit","status":1,"signal":"Killed: 9","killed":true}

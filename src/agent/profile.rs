@@ -373,6 +373,34 @@ pub trait AgentProfile: Send + Sync {
         false
     }
 
+    /// Decode a complete active question on this launch's current screen. The controller
+    /// first calls [`Self::question_dialog`]. An incomplete redraw must return `None`.
+    #[cfg(feature = "questions")]
+    fn question_on_screen(&self, _screen: &str) -> Option<super::questions::PendingQuestion> {
+        None
+    }
+
+    /// Confirm that this exact pending request is visible on the current screen. Used
+    /// again before each answer key. A transcript's provider ID may be invisible.
+    #[cfg(feature = "questions")]
+    fn question_shown(&self, screen: &str, pending: &super::questions::PendingQuestion) -> bool {
+        self.question_on_screen(screen).is_some_and(|p| {
+            p.questions == pending.questions && (p.id.is_empty() || p.id == pending.id)
+        })
+    }
+
+    /// Encode an explicitly requested host answer for this exact screen. A multi-step
+    /// answer is rechecked between writes. The default leaves the question to the user.
+    #[cfg(feature = "questions")]
+    fn answer_keys(
+        &self,
+        _screen: &str,
+        _pending: &super::questions::PendingQuestion,
+        _answers: &[super::questions::Answer],
+    ) -> Result<Vec<super::questions::KeyStep>, super::questions::AnswerError> {
+        Err(super::questions::AnswerError::Unsupported)
+    }
+
     /// Operation-scoped declarations and provenance, independent of runtime readiness.
     /// Defaults to unknown; overriding a built-in profile does not inherit its evidence.
     fn compatibility(&self) -> super::compatibility::Compatibility {
