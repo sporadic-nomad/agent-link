@@ -96,6 +96,10 @@ values over the snapshot.
 
 ---
 
+## Codex, Pi and Cursor PTY turns
+
+Controlled direct launches support provider-specific transcript observations with a host-enforced isolated namespace per terminal. Codex exposes explicit final text. Pi marks inferred replies, and Cursor distinguishes explicit completion, next-prompt inference and sensitive mixed text. [Setup, limits and recorded evidence](pty-transcript-sources.md)
+
 ## Claude PTY final replies
 
 Enable the off-by-default `turns` feature to read completed replies from a directly launched Claude Code **2.1.296** on **macOS arm64**. Each receiver belongs to one `AgentTerminal`. A host that forwards replies can keep its PTY event receiver for interactive display and poll its turn receiver separately.

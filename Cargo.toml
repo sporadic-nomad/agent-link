@@ -34,8 +34,8 @@ test-support = []
 screen = ["dep:vt100", "dep:regex"]
 # Agent profiles and the delivery controller; detection reads the screen model.
 agent = ["screen"]
-# Final replies from a controlled Claude Code PTY with a host-enforced single writer.
-turns = ["agent", "dep:close_fds", "dep:rustix", "dep:serde", "dep:serde_json"]
+# Controlled PTY transcript observations with explicit host-enforced writer isolation.
+turns = ["agent", "dep:close_fds", "dep:rustix", "dep:serde", "dep:serde_json", "dep:sha2"]
 # Per-run attachment of consumer-owned CLI tools and MCP connections.
 tools = ["agent", "dep:serde_json", "dep:tempfile", "dep:url"]
 # Stdio line transport for agents that speak JSON over stdin/stdout.
@@ -88,6 +88,8 @@ libc = "0.2"
 # Descriptor-relative transcript lookup and bounded JSON projections.
 rustix = { version = "1", features = ["fs"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
+# Fingerprint Cursor's prior records across an in-place transcript rewrite.
+sha2 = { version = "0.10.9", optional = true }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 # Only the leased direct PTY spawn needs fork-safe descriptor cleanup before exec.

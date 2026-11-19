@@ -8,6 +8,11 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `turns` adds isolated Codex, Pi and Cursor PTY transcript receivers on macOS arm64.
+  Codex emits explicit finals and Pi labels inferred replies. Cursor handles in-place
+  history rewrites, distinguishes inferred from explicit completion, and makes
+  mixed assistant/reasoning text an explicit opt-in.
+
 - The optional `turns` feature exposes final replies from a controlled, direct Claude
   Code 2.1.296 PTY on macOS arm64. Hosts enforce one writer per session and pass a
   revocable `ExclusiveClaudeRoot`. Attachments start at verified EOF, return bounded

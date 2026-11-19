@@ -590,6 +590,10 @@ pub(in crate::agent) struct ClaudeSource {
 impl ClaudeSource {
     pub(super) fn for_terminal(term: &AgentTerminal) -> Result<(Self, ClaudeParser), AttachError> {
         let claim = term.turn_claim().ok_or(AttachError::NoLaunch)?;
+        #[cfg(feature = "turns")]
+        if claim.source.is_some() {
+            return Err(AttachError::NoLaunch);
+        }
         let writer = claim.writer.clone().ok_or(AttachError::NoLaunch)?;
         Ok((
             Self {

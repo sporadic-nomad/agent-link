@@ -1,0 +1,7 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>Prompt 0</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Historical reply.\n\nFixture reasoning."}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>Prompt 1</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Same visible reply.\n\nFixture reasoning."}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>Prompt 2</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Same visible reply.\n\nFixture reasoning."}]}}
+{"type":"turn_ended","status":"success"}

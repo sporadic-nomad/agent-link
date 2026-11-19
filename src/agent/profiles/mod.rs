@@ -10,6 +10,7 @@
 //! | every launch | — | `-c check_for_update_on_startup=false` | — | — | — |
 //! | explicit PTY model and optional effort | `--model`, `--effort` | `-m`, `-c model_reasoning_effort=…` | `--model`, `--thinking` | unsupported | unsupported |
 //! | pre-trust ([`PreTrust::FlagsOnly`](crate::agent::PreTrust::FlagsOnly)) | — | `-c projects={"<cwd>"={trust_level="trusted"}}`, not under cmd.exe; saves nothing | `--approve`; saves nothing | — | `--trust`; **saves** a trust record |
+//! | isolated PTY transcript observation | Explicit final | Explicit final | Inferred stop | — | Explicit or next-prompt completion, opt-in mixed text |
 //! | `reset_command()` | `/clear` | `/clear` | `/new` | `/new` | `/new` |
 //! | `login_check()` | `auth status` | `login status` | — | — | — |
 //! | `rpc_launch()` (unattended) | [`CLAUDE_RPC_FLAGS`](claude::CLAUDE_RPC_FLAGS) + bypass mode (+ `--continue`) | [`CODEX_RPC_FLAGS`](codex::CODEX_RPC_FLAGS) + `-c approval_policy="never" -c sandbox_mode="danger-full-access"` | [`PI_RPC_FLAGS`](pi::PI_RPC_FLAGS) (+ `--continue`, or `--no-session` for a probe) | [`OPENCODE_RPC_FLAGS`](opencode::OPENCODE_RPC_FLAGS) + unattended env default | — |
@@ -56,6 +57,9 @@ pub mod pi;
 #[cfg(all(unix, any(test, feature = "turns")))]
 pub(in crate::agent) mod turns {
     pub(in crate::agent) mod claude;
+    #[cfg(feature = "turns")]
+    pub(in crate::agent) mod isolated;
+    mod json;
 }
 
 use std::fmt;

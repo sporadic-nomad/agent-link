@@ -1,0 +1,49 @@
+{
+  "provider": "codex",
+  "version": "0.154.0",
+  "platform": "macos-aarch64",
+  "context": "Two directly spawned native Codex TUI processes, one cwd and independent pinned canonical configuration directories. Loopback Responses API and isolated test accounts.",
+  "sessions": {
+    "a": {
+      "rollout_session_id": "01a1f3f2-0326-7082-b4ec-81086a9c975f",
+      "warm_up": {
+        "turn_id": "01a1f3f2-04a8-7b02-b625-880713168620",
+        "last_agent_message": "accepted warm0"
+      },
+      "observed": [
+        {
+          "turn_id": "01a1f3f2-0a94-7f21-a7e1-1c3477ca8750",
+          "last_agent_message": "accepted fresh0"
+        },
+        {
+          "turn_id": "01a1f3f2-0c56-79e3-8b27-7eff01ab977e",
+          "last_agent_message": "accepted fresh0"
+        }
+      ]
+    },
+    "b": {
+      "rollout_session_id": "01a1f3f2-0326-75c0-b463-b30b559d62f9",
+      "warm_up": {
+        "turn_id": "01a1f3f2-0695-7372-aa21-bc57907e2b0b",
+        "last_agent_message": "accepted warm1"
+      },
+      "observed": [
+        {
+          "turn_id": "01a1f3f2-08bd-74c1-80da-07d102339014",
+          "last_agent_message": "accepted fresh1"
+        },
+        {
+          "turn_id": "01a1f3f2-0dfd-7f30-ba85-2830f1e90947",
+          "last_agent_message": "accepted fresh1"
+        }
+      ]
+    }
+  },
+  "public_receives": [
+    "receiver 1 returned matching screen text: accepted fresh1",
+    "receiver 0 returned matching screen text: accepted fresh0",
+    "receiver 0 returned matching screen text: accepted fresh0",
+    "receiver 1 returned matching screen text: accepted fresh1"
+  ],
+  "other_receiver_empty_after_each_pull": true
+}

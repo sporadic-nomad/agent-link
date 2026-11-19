@@ -27,10 +27,27 @@ impl Batch {
     }
 }
 
+#[derive(Clone)]
+pub(super) enum Position {
+    Append(Cursor),
+    #[cfg(feature = "turns")]
+    Snapshot(Arc<super::snapshots::Proof>),
+}
+
+impl Position {
+    fn confirm(&self, opened: &Opened) -> Result<bool, Gap> {
+        match self {
+            Self::Append(c) => c.confirm(opened).map(|()| true),
+            #[cfg(feature = "turns")]
+            Self::Snapshot(s) => s.confirm(opened),
+        }
+    }
+}
+
 struct Queue {
     status: Status,
     opened: Weak<Opened>,
-    cursor: Option<Cursor>,
+    cursor: Option<Position>,
     pending: Batch,
 }
 
@@ -151,7 +168,7 @@ impl Stream {
     /// unadmitted parser candidate has its own (smaller) reply limit.
     pub(super) fn stage(&self, staged: &mut Batch, reply: Reply) -> Result<(), Gap> {
         let bytes = reply.text.len();
-        if bytes == 0 && !reply.truncated {
+        if bytes == 0 && !reply.truncated && !reply.completion_only {
             return Ok(());
         }
         if bytes > self.limits.reply_bytes {
@@ -188,7 +205,11 @@ impl Stream {
         })
     }
 
-    pub(super) fn commit(&self, status: Status, cursor: Cursor, mut batch: Batch) -> bool {
+    pub(super) fn commit(&self, status: Status, cursor: Cursor, batch: Batch) -> bool {
+        self.commit_at(status, Position::Append(cursor), batch)
+    }
+
+    pub(super) fn commit_at(&self, status: Status, cursor: Position, mut batch: Batch) -> bool {
         self.access(|q| {
             if !q.status.live() {
                 return false;
@@ -243,17 +264,26 @@ impl TurnReceiver {
             if !q.status.live() || q.pending.replies.is_empty() {
                 return None;
             }
-            Some((q.opened.upgrade()?, q.cursor?))
+            Some((q.opened.upgrade()?, q.cursor.clone()?))
         })?;
         let launch = self.launch.upgrade()?;
         let witness = self.witness.upgrade()?;
-        if let Err(reason) = witness
+        match witness
             .current(&launch)
             .and_then(|current| opened.confirm(&launch, current))
             .and_then(|()| cursor.confirm(&opened))
-        {
-            self.stream.finish(Status::Gap(reason));
-            return None;
+            .and_then(|valid| {
+                if valid {
+                    opened.confirm(&launch, witness.current(&launch)?)?;
+                }
+                Ok(valid)
+            }) {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(reason) => {
+                self.stream.finish(Status::Gap(reason));
+                return None;
+            }
         }
         if !self.stream.sample_terminal(true) {
             return None;

@@ -1,0 +1,4 @@
+{"type":"session_meta","payload":{"id":"01a1f3d5-461f-73a2-bf71-173935f41721","cwd":"/fixture/project","originator":"codex-tui","cli_version":"0.154.0","source":"cli","thread_source":"user"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"01a1f3d5-5179-7ca0-8d95-93dd77ae7153"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Sample confirmed."}]}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"01a1f3d5-5179-7ca0-8d95-93dd77ae7153","last_agent_message":"Sample confirmed."}}

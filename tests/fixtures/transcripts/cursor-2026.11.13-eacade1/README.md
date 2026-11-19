@@ -1,0 +1,7 @@
+# Cursor 2026.11.13-eacade1 packaged transcript writer
+
+On November 19, 2026, the macOS arm64 package's `./src/transcript/cli-transcript-writer.ts` module ran with a temporary home, an isolated `CURSOR_DATA_DIR` and network access denied. The downloaded release archive SHA-256 was `087220ccf1e124dcdf2753601422892042a45a2c577ef0ea25b8a5b0e47bb691`. [Official release archive](https://downloads.cursor.com/lab/2026.11.13-eacade1/darwin/arm64/agent-cli-package.tar.gz)
+
+The harness loaded the package module table, constructed its foreground `CliTranscriptWriter` for `/fixture/project` with a fixed UUID, and supplied an in-memory blob store containing fabricated model inputs. It called `writeTurnEndedFromState` three times, each with one additional user/assistant pair and `status: "success"`. Each assistant had a text block and a separate reasoning block. The final two pairs reused the same assistant text and reasoning.
+
+The three JSONL files are unmodified successive copies from the writer's own output. Each write used the same inode at `projects/fixture-project/agent-transcripts/<uuid>/<uuid>.jsonl`, omitted the previous end marker, and kept all earlier message rows. The serializer combined answer and reasoning in a single text block. This fixture measures the released writer with fabricated inputs. Authenticated Cursor startup, display and backend behavior remain unverified in this check. [Public rewrite regression](../../../isolated_turns.rs)

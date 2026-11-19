@@ -1,0 +1,9 @@
+# Codex 0.154.0 interactive rollout
+
+On November 19, 2026, the native macOS arm64 Codex 0.154.0 TUI ran in a fresh project and configuration directory with a loopback Responses API peer. The peer requested a Plan-mode choice. After the operator selected Blue, the terminal rendered “Sample confirmed.” and the rollout recorded that exact text in the completed turn. The executable SHA-256 was `4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc`. [Codex release](https://github.com/openai/codex/releases/tag/rust-v0.154.0)
+
+`turns.jsonl` projects the observed session header, task start, assistant output item and final event in order. Only the fields used for recognition and the comparison with the displayed reply remain. The cwd was replaced with `/fixture/project`. Session and turn IDs come from the recording. Configuration, system instructions, tool arguments and other unrelated records are omitted.
+
+The offline public-API test uses two scripted foreground PTYs and separate directories with the same cwd and session ID. It adds synthetic commentary and reasoning and compares only explicit, matched final events. [Public regression](../../../isolated_turns.rs)
+
+A second native acceptance check used the public Rust launch, attachment, status and pull APIs. Two Codex 0.154.0 foreground processes shared one project, with separate leased canonical configuration directories. Each completed a warm-up with its own loopback peer response. Four subsequent pulls came from B, A, A, B. Each matched the reply on that terminal, the other receiver stayed empty, and each equal-text pair had two distinct completed rollout turn IDs. A Darwin file-ID directory name failed Codex's startup `realpath` check during development. The production launcher now provides the validated canonical directory name. [Paired observations](native-pair.json)

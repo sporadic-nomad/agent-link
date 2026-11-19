@@ -1,9 +1,12 @@
-//! Final reply observation requires a native macOS arm64 Claude Code launch.
+//! Final reply observation requires a controlled native macOS arm64 launch.
 //! Other platforms expose the same API and report unsupported launch or missing attachment.
 
 #[path = "api.rs"]
 mod api;
+#[path = "providers.rs"]
+mod providers;
 pub use api::{AttachError, ExclusiveClaudeRoot, TurnGap, TurnOptions, TurnReply, TurnStatus};
+pub use providers::{IsolatedTranscriptRoot, TranscriptReceiver, TranscriptSource, TranscriptTurn};
 
 /// Pull receiver for one corroborated transcript. Created only on a supported platform.
 pub struct TurnReceiver(std::convert::Infallible);

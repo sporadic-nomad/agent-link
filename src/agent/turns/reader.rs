@@ -35,8 +35,20 @@ pub(super) fn spawn(
             let (mut source, mut parser, _witness) = (source, parser, witness);
             let result = catch_unwind(AssertUnwindSafe(|| {
                 let mut reader = Reader::new(options.limits);
+                #[cfg(feature = "turns")]
+                let mut snapshots = source
+                    .snapshot_marker()
+                    .map(|marker| super::snapshots::Reader::new(marker, options.limits));
                 while stream.sample_terminal(reader.bound.is_some()) {
-                    match reader.poll(&launch, &mut source, &mut parser, &stream) {
+                    #[cfg(feature = "turns")]
+                    let pass = if let Some(snapshots) = &mut snapshots {
+                        snapshots.poll(&launch, &mut source, &mut parser, &stream)
+                    } else {
+                        reader.poll(&launch, &mut source, &mut parser, &stream)
+                    };
+                    #[cfg(not(feature = "turns"))]
+                    let pass = reader.poll(&launch, &mut source, &mut parser, &stream);
+                    match pass {
                         Ok(Pass::VerifyMore) => continue,
                         Ok(Pass::Complete | Pass::RetryOnTick) => {}
                         Err(reason) => {
@@ -69,6 +81,7 @@ struct Reader {
     pending: Option<Candidate>,
     buf: Vec<u8>,
     limits: Limits,
+    last_growth: std::time::Instant,
 }
 
 struct Candidate {
@@ -87,6 +100,7 @@ impl Reader {
             pending: None,
             buf: vec![0; limits.read_bytes.min(MAX_NEW_BYTES)],
             limits,
+            last_growth: std::time::Instant::now(),
         }
     }
 
@@ -128,9 +142,29 @@ impl Reader {
         } else {
             tail.opened.confirm(launch, source.current(launch)?)?;
             let n = tail.read(&mut self.buf)?;
-            if !stream.status().live() || n == 0 {
+            if !stream.status().live() {
                 return Ok(Pass::Complete);
             }
+            if n == 0 {
+                if parser.has_quiet_candidate()
+                    && framer.turn.armed
+                    && !framer.skip
+                    && framer.partial.is_empty()
+                    && self.last_growth.elapsed() >= std::time::Duration::from_secs(3)
+                {
+                    tail.opened.confirm(launch, source.current(launch)?)?;
+                    if stream.sample_terminal(true) && tail.read(&mut self.buf)? == 0 {
+                        if let Some(reply) = parser.quiet() {
+                            let mut batch = Batch::new();
+                            stream.stage(&mut batch, reply)?;
+                            framer.turn.armed = false;
+                            stream.commit(framer.status(tail), tail.cursor, batch);
+                        }
+                    }
+                }
+                return Ok(Pass::Complete);
+            }
+            self.last_growth = std::time::Instant::now();
             let candidate = framer.parse(&tail.opened.binding, &self.buf[..n], parser, stream)?;
             (candidate, self.buf.len().min(MAX_NEW_BYTES - n))
         };
@@ -159,12 +193,56 @@ impl Reader {
     }
 }
 
+/// Require a complete post-baseline prompt before accepting its completion.
+#[derive(Default)]
+pub(super) struct TurnState {
+    armed: bool,
+    pub(super) incomplete: u32,
+}
+
+impl TurnState {
+    pub(super) fn apply(
+        &mut self,
+        record: Record,
+        replies: &mut Batch,
+        stream: &Stream,
+    ) -> Result<(), Gap> {
+        match record {
+            Record::Ignore => {}
+            Record::User => {
+                if self.armed {
+                    self.incomplete = self.incomplete.saturating_add(1);
+                }
+                self.armed = true;
+            }
+            #[cfg(feature = "turns")]
+            Record::Next(reply) => {
+                if self.armed {
+                    if let Some(reply) = reply {
+                        stream.stage(replies, reply)?;
+                    } else {
+                        self.incomplete = self.incomplete.saturating_add(1);
+                    }
+                }
+                self.armed = true;
+            }
+            Record::End(reply) => {
+                if std::mem::take(&mut self.armed) {
+                    if let Some(reply) = reply {
+                        stream.stage(replies, reply)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 struct Framer {
     limits: Limits,
     partial: Vec<u8>,
     skip: bool,
-    armed: bool,
-    incomplete: u32,
+    turn: TurnState,
 }
 
 impl Framer {
@@ -173,8 +251,7 @@ impl Framer {
             limits,
             partial: Vec::with_capacity(limits.line_bytes),
             skip,
-            armed: false,
-            incomplete: 0,
+            turn: TurnState::default(),
         }
     }
 
@@ -182,7 +259,7 @@ impl Framer {
         Status::Active {
             start: tail.start,
             offset: tail.cursor.offset,
-            incomplete_turns: self.incomplete,
+            incomplete_turns: self.turn.incomplete,
         }
     }
 
@@ -230,22 +307,8 @@ impl Framer {
             } else {
                 text
             };
-            match parser.record(binding, line, self.limits.reply_bytes)? {
-                Record::Ignore => {}
-                Record::User => {
-                    if self.armed {
-                        self.incomplete = self.incomplete.saturating_add(1);
-                    }
-                    self.armed = true;
-                }
-                Record::End(reply) => {
-                    if std::mem::take(&mut self.armed) {
-                        if let Some(reply) = reply {
-                            stream.stage(&mut replies, reply)?;
-                        }
-                    }
-                }
-            }
+            let record = parser.record(binding, line, self.limits.reply_bytes)?;
+            self.turn.apply(record, &mut replies, stream)?;
         }
         Ok(Candidate {
             used,

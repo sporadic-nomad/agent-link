@@ -52,6 +52,26 @@ pub struct AgentSpec {
     pub trace: Option<bool>,
 }
 
+#[cfg(feature = "turns")]
+#[derive(Clone, Copy)]
+enum Observation<'a> {
+    Claude(&'a super::turns::ExclusiveClaudeRoot),
+    Other(
+        super::turns::TranscriptSource,
+        &'a super::turns::IsolatedTranscriptRoot,
+    ),
+}
+
+#[cfg(feature = "turns")]
+impl<'a> Observation<'a> {
+    fn root(self) -> &'a super::turns::ExclusiveClaudeRoot {
+        match self {
+            Self::Claude(root) => root,
+            Self::Other(_, isolated) => &isolated.0,
+        }
+    }
+}
+
 impl AgentSpec {
     /// `profile` with the defaults: [`Permissions::Unattended`], [`TrustPolicy::default`],
     /// [`Timing::default`], [`ForegroundPolicy::ExactOnly`], trace by environment.
@@ -283,7 +303,13 @@ impl AgentTerminal {
         agent.limits.validate()?;
         let shell = Self::resolve_shell(&mut spec);
         let plan = agent.selected_launch(&spec, shell)?;
-        Self::spawn_prepared(spec, agent, shell, plan, Some(exclusive))
+        Self::spawn_prepared(
+            spec,
+            agent,
+            shell,
+            plan,
+            Some(Observation::Claude(exclusive)),
+        )
     }
 
     /// Attaches at the verified EOF of the current session of a controlled Claude PTY.
@@ -304,6 +330,61 @@ impl AgentTerminal {
         #[cfg(unix)]
         {
             super::profiles::turns::claude::ClaudeSource::attach(self, options.into())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = options;
+            Err(super::turns::AttachError::NoLaunch)
+        }
+    }
+
+    /// Launch a trusted direct Codex, Pi or Cursor interactive CLI in a transcript
+    /// namespace dedicated to this PTY. Requires `turns` on native macOS arm64.
+    /// The matching profile, an absolute program and a leased directory are required.
+    /// Admission validates bounded interactive argv, installs the provider's root
+    /// environment variable and refuses pre-existing transcripts and competing launches.
+    /// Pi and Cursor take the absolute Node executable and their packaged CLI script.
+    /// Explicitly removed or conflicting provider-root environment settings are refused.
+    /// Configure model access separately. See the host guide for the accepted options
+    /// and the host's ongoing isolation responsibilities.
+    #[cfg(feature = "turns")]
+    pub fn spawn_with_transcript_turns(
+        mut spec: SpawnSpec,
+        agent: AgentSpec,
+        source: super::turns::TranscriptSource,
+        root: &super::turns::IsolatedTranscriptRoot,
+    ) -> Result<(AgentTerminal, Receiver<Event>)> {
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            || !matches!(spec.mode, SpawnMode::Direct { .. })
+        {
+            return Err(crate::Error::Unsupported(
+                "isolated transcript turns require a direct macOS arm64 launch".into(),
+            ));
+        }
+        agent.limits.validate()?;
+        let shell = Self::resolve_shell(&mut spec);
+        let plan = agent.selected_launch(&spec, shell)?;
+        Self::spawn_prepared(
+            spec,
+            agent,
+            shell,
+            plan,
+            Some(Observation::Other(source, root)),
+        )
+    }
+
+    /// Observe new turns beginning after verified EOF. Each nonempty pull rechecks
+    /// file, process and writer isolation. Ambiguity, divergent history, or session change
+    /// discards pending data and reports a persistent gap. Returns NoLaunch on an
+    /// ordinary or Claude-only terminal. One active or retiring worker per terminal.
+    #[cfg(feature = "turns")]
+    pub fn attach_transcript_turns(
+        &self,
+        options: super::turns::TurnOptions,
+    ) -> std::result::Result<super::turns::TranscriptReceiver, super::turns::AttachError> {
+        #[cfg(unix)]
+        {
+            super::profiles::turns::isolated::attach(self, options)
         }
         #[cfg(not(unix))]
         {
@@ -387,7 +468,7 @@ impl AgentTerminal {
         agent: AgentSpec,
         shell: ShellKind,
         prepared: Option<LaunchPlan>,
-        #[cfg(feature = "turns")] exclusive: Option<&super::turns::ExclusiveClaudeRoot>,
+        #[cfg(feature = "turns")] exclusive: Option<Observation<'_>>,
     ) -> Result<(AgentTerminal, Receiver<Event>)> {
         spec.screen.enabled = true;
         let direct = matches!(spec.mode, SpawnMode::Direct { .. });
@@ -437,9 +518,12 @@ impl AgentTerminal {
             .as_ref()
             .map_or_else(String::new, |p| p.id().to_string());
         #[cfg(feature = "turns")]
-        if exclusive.is_some() && profile_id != "claude" {
+        if exclusive.is_some_and(|observation| match observation {
+            Observation::Claude(_) => profile_id != "claude",
+            Observation::Other(source, _) => profile_id != source.profile(),
+        }) {
             return Err(crate::Error::InvalidInput(
-                "Claude PTY turns require the Claude profile".into(),
+                "controlled transcript source requires its matching profile".into(),
             ));
         }
         #[cfg(all(unix, any(test, feature = "turns")))]
@@ -447,10 +531,15 @@ impl AgentTerminal {
         #[cfg(all(unix, any(test, feature = "turns")))]
         if let Some(plan) = observer_plan {
             #[cfg(feature = "turns")]
-            if let Some(root) = exclusive {
-                turn_claim = Some(super::profiles::turns::claude::capture_exclusive(
-                    &mut spec, &plan, root,
-                )?);
+            if let Some(observation) = exclusive {
+                turn_claim = Some(match observation {
+                    Observation::Claude(root) => {
+                        super::profiles::turns::claude::capture_exclusive(&mut spec, &plan, root)?
+                    }
+                    Observation::Other(source, root) => {
+                        super::profiles::turns::isolated::capture(&mut spec, source, root)?
+                    }
+                });
             }
             #[cfg(test)]
             if let Some(capture) = agent.turn_launch.as_ref().filter(|_| turn_claim.is_none()) {
@@ -458,7 +547,21 @@ impl AgentTerminal {
             }
         }
         #[cfg(feature = "turns")]
-        let admit = exclusive.map(|root| move || root.admit_spawn());
+        #[cfg(unix)]
+        let reserved_claim = turn_claim.as_ref();
+        #[cfg(feature = "turns")]
+        let admit = exclusive.map(|observation| {
+            move || {
+                let guard = observation.root().admit_spawn()?;
+                #[cfg(unix)]
+                if let Some(claim) = reserved_claim {
+                    if claim.source.is_some() {
+                        super::profiles::turns::isolated::check_empty(claim)?;
+                    }
+                }
+                Ok(guard)
+            }
+        });
         #[cfg(not(feature = "turns"))]
         let admit = None::<fn() -> Result<()>>;
         let (term, events, watch) = Terminal::spawn_watched(spec, admit, || {

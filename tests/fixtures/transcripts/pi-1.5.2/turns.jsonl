@@ -1,0 +1,8 @@
+{"type":"session","version":3,"id":"11111111-1111-4111-8111-111111111111","cwd":"/fixture/project"}
+{"type":"model_change","id":"139363e9","parentId":null}
+{"type":"thinking_level_change","id":"741ef4bc","parentId":"139363e9"}
+{"type":"message","id":"39a2adbc","parentId":"741ef4bc","message":{"role":"system"}}
+{"type":"message","id":"482c8c47","parentId":"39a2adbc","message":{"role":"user","content":[{"type":"text","text":"pi-proposal-prompt-1"}]}}
+{"type":"message","id":"2e0c3f99","parentId":"482c8c47","message":{"role":"assistant","content":[{"type":"text","text":"pi-proposal-reply-1"}],"stopReason":"stop"}}
+{"type":"message","id":"29ede507","parentId":"2e0c3f99","message":{"role":"user","content":[{"type":"text","text":"pi-proposal-prompt-2"}]}}
+{"type":"message","id":"57ec2249","parentId":"29ede507","message":{"role":"assistant","content":[{"type":"text","text":"pi-proposal-reply-2"}],"stopReason":"stop"}}

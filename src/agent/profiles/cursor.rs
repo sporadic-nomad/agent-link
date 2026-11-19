@@ -73,6 +73,13 @@ impl AgentProfile for CursorProfile {
             login_check: Support::Unsupported,
             evidence: &[
                 Evidence {
+                    operation: "packaged CLI transcript writer serialization and rewrites",
+                    kind: EvidenceKind::LiveCheck,
+                    cli_version: Some("2026.11.13-eacade1"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/transcripts/cursor-2026.11.13-eacade1/README.md",
+                },
+                Evidence {
                     operation: "trust screen recognition",
                     kind: EvidenceKind::CapturedTerminal,
                     cli_version: Some("2026.09.23-86fc751"),

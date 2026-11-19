@@ -17,6 +17,9 @@ teardown; consumers still implement tools, IPC and server lifecycle.
 Optional `turns` observes fresh final replies for direct Claude Code 2.1.296 PTYs on
 macOS arm64 with an explicit host-enforced exclusive writer lease. Its dedicated
 receiver reports attribution and continuity loss independently of delivery tickets.
+Codex, Pi and Cursor support separate direct, single-terminal namespaces. Codex
+has explicit final text, Pi infers completion, and Cursor handles bounded in-place
+rewrites with mixed model text exposed only by explicit opt-in.
 
 PTY recovery attachments expose process-local byte cursors, loss ranges and geometry;
 optional display snapshots are fenced to output but are not parser checkpoints.
@@ -107,6 +110,7 @@ that merely reproduce an implementation expression or unnecessarily expose priva
 | PTY/process lifecycle or event ordering | Module unit tests; `tests/pty_roundtrip.rs`, `tests/pty_windows.rs` |
 | Input admission or overload | Queue unit tests; `tests/input_limits.rs`, `tests/profile_isolation.rs` |
 | Agent startup, ownership, delivery or reset | State/startup unit tests; `tests/agent_startup.rs`, `tests/agent_delivery.rs`, `tests/agent_delivery_owner.rs`, `tests/agent_strict.rs`, `tests/agent_reset.rs` |
+| Isolated Codex, Pi and Cursor PTY turn observation | `agent::profiles::turns::isolated`, `tests/isolated_turns.rs`, `tests/compatibility.rs` |
 | Claude PTY turn observation | `agent::turns`, `agent::profiles::turns::claude`, `tests/claude_turns.rs`, `tests/compatibility.rs` |
 | RPC framing, errors or privacy | `src/rpc/tests.rs`, framing/input unit tests, `tests/rpc_roundtrip.rs` |
 | Native adapter lifecycle or protocol | `src/codex/tests.rs`, `tests/codex_adapter.rs`, `src/claude/tests.rs`; synthetic pinned wire projections in `tests/fixtures/codex-app-server/` |

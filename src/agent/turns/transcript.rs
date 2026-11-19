@@ -50,7 +50,7 @@ impl Root {
         self.check_path(&self.path)
     }
 
-    pub(super) fn check_path(&self, path: &Path) -> Result<(), Gap> {
+    pub(in crate::agent) fn check_path(&self, path: &Path) -> Result<(), Gap> {
         let named = statat(CWD, path, AtFlags::SYMLINK_NOFOLLOW).map_err(|err| match err {
             rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR => Gap::Replaced,
             _ => Gap::Io,
@@ -84,6 +84,36 @@ impl Root {
             .map_err(std::io::Error::from)?;
         }
         Ok((dir, name))
+    }
+
+    /// List one bounded level through the pinned directory, without following links.
+    #[cfg(feature = "turns")]
+    pub(in crate::agent) fn names(
+        &self,
+        relative: &Path,
+        remaining: &mut usize,
+    ) -> Result<Vec<std::ffi::OsString>, Gap> {
+        use std::os::unix::ffi::OsStrExt;
+        self.check_name()?;
+        let mut dir = self.dir.try_clone()?;
+        for part in relative.components() {
+            let Component::Normal(part) = part else {
+                return Err(Gap::Uncorroborated);
+            };
+            dir = openat(&dir, part, read_flags() | OFlags::DIRECTORY, Mode::empty())
+                .map_err(std::io::Error::from)?;
+        }
+        let mut names = Vec::new();
+        for entry in rustix::fs::Dir::read_from(&dir).map_err(std::io::Error::from)? {
+            let entry = entry.map_err(std::io::Error::from)?;
+            let name = entry.file_name().to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            *remaining = remaining.checked_sub(1).ok_or(Gap::Oversized)?;
+            names.push(OsStr::from_bytes(name).to_owned());
+        }
+        Ok(names)
     }
 
     fn stat(&self, relative: &Path) -> Result<Stat, Gap> {
@@ -189,6 +219,39 @@ impl Opened {
         Ok(head.ends_with(b"\n").then_some(head))
     }
 
+    /// Cursor rewrites the same file. Snapshot reads sample both sides of the
+    /// bounded I/O and keep their own continuity proof, independently of append-only tails.
+    #[cfg(feature = "turns")]
+    pub(super) fn snapshot(
+        &self,
+        limit: usize,
+        chunk: usize,
+    ) -> Result<Option<(Vec<u8>, FileVersion)>, Gap> {
+        let before = FileVersion::sample(&self.file)?;
+        let n = usize::try_from(before.length)
+            .ok()
+            .filter(|n| *n <= limit)
+            .ok_or(Gap::Oversized)?;
+        let mut bytes = vec![0u8; n];
+        let mut offset = 0;
+        for part in bytes.chunks_mut(chunk) {
+            match self.file.read_exact_at(part, offset) {
+                Ok(()) => offset += part.len() as u64,
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if FileVersion::sample(&self.file)? != before {
+            return Ok(None);
+        }
+        Ok(Some((bytes, before)))
+    }
+
+    #[cfg(feature = "turns")]
+    pub(super) fn snapshot_version(&self) -> Result<FileVersion, Gap> {
+        Ok(FileVersion::sample(&self.file)?)
+    }
+
     /// Serialize the metadata query with its length comparison so a worker and a
     /// queued pull cannot record their samples out of order. A shrink is terminal
     /// even if the file grows back before the detecting thread publishes the gap.
@@ -272,7 +335,7 @@ impl Cursor {
 /// A change during verification invalidates the bytes already checked. The next
 /// pass compares them again to distinguish a rewrite from a concurrent append.
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct FileVersion {
+pub(super) struct FileVersion {
     length: u64,
     modified: (i64, i64),
     changed: (i64, i64),

@@ -39,7 +39,7 @@ impl ExclusiveClaudeRoot {
             let root = std::path::absolute(root)
                 .and_then(super::transcript::Root::open)
                 .map_err(|source| crate::Error::Io {
-                    context: "pin exclusive Claude configuration root".into(),
+                    context: "pin exclusive transcript root".into(),
                     source,
                 })?;
             // Darwin can name a directory by volume and file ID. Holding the
@@ -56,9 +56,33 @@ impl ExclusiveClaudeRoot {
         {
             let _ = root;
             Err(crate::Error::Unsupported(
-                "Claude PTY turns require native macOS arm64".into(),
+                "controlled PTY turns require native macOS arm64".into(),
             ))
         }
+    }
+
+    /// Some native providers call realpath on their configuration directory.
+    /// Darwin's /.vol path works for descriptor lookup but fails realpath.
+    pub(super) fn named(root: &Path) -> crate::Result<Self> {
+        #[cfg(unix)]
+        {
+            let mut lease = Self::new(root)?;
+            let name = lease
+                .root
+                .path
+                .canonicalize()
+                .map_err(|source| crate::Error::Io {
+                    context: "resolve isolated transcript root".into(),
+                    source,
+                })?;
+            lease.root.check_path(&name).map_err(|_| {
+                crate::Error::InvalidInput("isolated transcript root changed during setup".into())
+            })?;
+            lease.launch_path = name;
+            Ok(lease)
+        }
+        #[cfg(not(unix))]
+        Self::new(root)
     }
 
     /// Revoke before releasing the external admission or filesystem isolation. Existing
@@ -77,7 +101,7 @@ impl ExclusiveClaudeRoot {
         let guard = self.spawning.lock().unwrap_or_else(|e| e.into_inner());
         if !self.active.load(Ordering::Acquire) {
             return Err(crate::Error::InvalidInput(
-                "exclusive Claude writer authority was revoked".into(),
+                "exclusive transcript writer authority was revoked".into(),
             ));
         }
         #[cfg(unix)]
@@ -85,7 +109,7 @@ impl ExclusiveClaudeRoot {
             .check_name()
             .and_then(|()| self.root.check_path(&self.launch_path))
             .map_err(|_| {
-                crate::Error::InvalidInput("exclusive Claude root unavailable at spawn".into())
+                crate::Error::InvalidInput("exclusive transcript root unavailable at spawn".into())
             })?;
         Ok(guard)
     }
@@ -94,12 +118,12 @@ impl ExclusiveClaudeRoot {
     pub(in crate::agent) fn bind(&self, claim: &mut super::Claim) -> crate::Result<()> {
         self.root
             .check_name()
-            .map_err(|_| crate::Error::InvalidInput("exclusive Claude root changed".into()))?;
+            .map_err(|_| crate::Error::InvalidInput("exclusive transcript root changed".into()))?;
         if !self.active.load(Ordering::Acquire)
             || self.root.directory_id() != claim.root.directory_id()
         {
             return Err(crate::Error::InvalidInput(
-                "missing authority for effective Claude configuration root".into(),
+                "missing authority for effective transcript root".into(),
             ));
         }
         claim.root = self.root.clone();
@@ -124,7 +148,8 @@ impl fmt::Debug for ExclusiveClaudeRoot {
     }
 }
 
-/// Bounded final text of one complete turn that began after the attachment's EOF.
+/// Bounded text of a turn that began after the attachment's verified EOF.
+/// For isolated sources the enclosing `TranscriptTurn` specifies its completion evidence and sensitivity.
 /// Debug reports the byte count and truncation flag. The host owns the returned text.
 #[derive(Default)]
 #[non_exhaustive]
@@ -133,6 +158,10 @@ pub struct TurnReply {
     pub text: String,
     /// The final reply exceeded the configured byte budget and was cut at a UTF-8 boundary.
     pub truncated: bool,
+    #[cfg(unix)]
+    pub(in crate::agent) completion_only: bool,
+    #[cfg(feature = "turns")]
+    pub(in crate::agent) inferred: bool,
 }
 
 #[cfg(unix)]
@@ -232,7 +261,7 @@ pub enum AttachError {
     #[error("invalid turn reader limits")]
     InvalidLimits,
     /// The terminal has no eligible launch or that launch ended.
-    #[error("no eligible Claude PTY launch")]
+    #[error("no eligible controlled PTY launch")]
     NoLaunch,
     /// An active or retiring worker holds this terminal or the global worker budget.
     #[error("turn reader capacity is in use")]
@@ -252,9 +281,10 @@ pub enum AttachError {
 pub struct TurnOptions {
     /// New data requested per read, within the 64 KiB verification and read budget.
     pub read_bytes: usize,
-    /// Maximum complete records consumed per batch (256).
+    /// Maximum complete records consumed per batch, or per full Cursor image (256).
     pub records: usize,
-    /// Maximum JSON line bytes excluding its newline (1 MiB).
+    /// Maximum JSON line bytes excluding its newline (1 MiB). Cursor bounds the
+    /// entire rewrite image by this limit and by 16 times `read_bytes`.
     pub line_bytes: usize,
     /// Maximum retained UTF-8 bytes per final reply (256 KiB).
     pub reply_bytes: usize,

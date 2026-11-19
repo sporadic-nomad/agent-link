@@ -164,6 +164,13 @@ impl AgentProfile for PiProfile {
             login_check: Support::Unsupported,
             evidence: &[
                 Evidence {
+                    operation: "interactive session assistant stop candidate",
+                    kind: EvidenceKind::CapturedTranscript,
+                    cli_version: Some("1.5.2"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/transcripts/pi-1.5.2/README.md",
+                },
+                Evidence {
                     operation: "ready screen recognition",
                     kind: EvidenceKind::CapturedTerminal,
                     cli_version: Some("0.85.1"),

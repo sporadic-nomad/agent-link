@@ -1,4 +1,9 @@
-//! Final replies from a host-controlled Claude Code 2.1.296 PTY on macOS arm64.
+//! Turn observations from host-controlled direct PTYs on macOS arm64.
+//!
+//! Codex, Pi and Cursor use an [`IsolatedTranscriptRoot`] per terminal. A
+//! [`TranscriptReceiver`] yields provider-specific [`TranscriptTurn`] values that
+//! distinguish explicit and inferred completions and Cursor's sensitive model text.
+//! Claude Code 2.1.296 has its own final reply API, illustrated below.
 //!
 //! The host first enforces exclusive writer access to each conversation in a dedicated
 //! configuration root. Keep its [`ExclusiveClaudeRoot`] alive while admitting launches
@@ -36,7 +41,13 @@
 //! until they revoke the lease.
 
 mod api;
+#[cfg(feature = "turns")]
+mod providers;
+#[cfg(feature = "turns")]
+pub use providers::{IsolatedTranscriptRoot, TranscriptReceiver, TranscriptSource, TranscriptTurn};
 mod reader;
+#[cfg(feature = "turns")]
+mod snapshots;
 mod stream;
 mod transcript;
 
@@ -77,6 +88,8 @@ pub(super) struct Claim {
     pub(super) cwd: PathBuf,
     pub(super) root: Arc<transcript::Root>,
     authority: Option<Arc<AtomicBool>>,
+    #[cfg(feature = "turns")]
+    pub(super) source: Option<TranscriptSource>,
     /// Present when the provider reserved a new launch before spawn. The slot and
     /// retiring worker share its lifetime, including across a fresh attachment.
     pub(super) writer: Option<Arc<dyn Witness>>,
@@ -99,6 +112,8 @@ impl Claim {
             cwd,
             root: Arc::new(root),
             authority: None,
+            #[cfg(feature = "turns")]
+            source: None,
             writer: None,
         })
     }
@@ -167,6 +182,11 @@ pub(super) trait Source: Send + 'static {
         Opened::new(launch, binding)
     }
 
+    /// Cursor rewrites its history in place. Other sources append records.
+    #[cfg(feature = "turns")]
+    fn snapshot_marker(&self) -> Option<snapshots::Marker> {
+        None
+    }
     /// Return false to wait for a partial header on this same pinned file.
     fn header_ready(&mut self, _opened: &mut Opened) -> Result<bool, Gap> {
         Ok(true)
@@ -178,6 +198,13 @@ pub(super) trait Source: Send + 'static {
 pub(super) trait Parser: Send + 'static {
     fn record(&mut self, binding: &Binding, line: &[u8], reply_limit: usize)
     -> Result<Record, Gap>;
+    // Only Pi implements an expressly inferred quiet-time boundary.
+    fn has_quiet_candidate(&self) -> bool {
+        false
+    }
+    fn quiet(&mut self) -> Option<Reply> {
+        None
+    }
     fn reset(&mut self);
 }
 
@@ -185,6 +212,8 @@ pub(super) enum Record {
     Ignore,
     User,
     End(Option<Reply>),
+    #[cfg(feature = "turns")]
+    Next(Option<Reply>),
 }
 
 impl From<std::io::Error> for Gap {

@@ -163,6 +163,13 @@ impl AgentProfile for CodexProfile {
             login_check: Support::Supported,
             evidence: &[
                 Evidence {
+                    operation: "interactive rollout final reply parsing",
+                    kind: EvidenceKind::CapturedTranscript,
+                    cli_version: Some("0.154.0"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/transcripts/codex-0.154.0/README.md",
+                },
+                Evidence {
                     operation: "question dialog recognition",
                     kind: EvidenceKind::CapturedTerminal,
                     cli_version: Some("0.154.0"),
