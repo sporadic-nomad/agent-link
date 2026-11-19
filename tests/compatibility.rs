@@ -41,6 +41,64 @@ fn profile_evidence_artifacts_and_recorded_versions_exist() {
     }
 }
 
+#[test]
+fn claude_writer_binding_and_final_reply_evidence_match_the_paired_capture() {
+    const SOURCE: &str = "tests/fixtures/transcripts/claude-2.1.296/capture.json";
+    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SOURCE);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["kind"], "captured-transcript");
+    assert_eq!(manifest["provider"], "claude");
+    assert_eq!(manifest["launchMode"], "direct");
+    assert_eq!(manifest["version"], "2.1.296");
+    assert_eq!(manifest["platformId"], "macos-aarch64");
+    let operations = [
+        "direct PTY transcript writer binding with host-enforced exclusive access",
+        "direct PTY final reply parsing",
+    ];
+    assert_eq!(manifest["operations"], serde_json::json!(operations));
+
+    let profile = ProfileRegistry::builtin().get("claude").unwrap();
+    let metadata = profile.compatibility();
+    for operation in operations {
+        let evidence = metadata
+            .evidence
+            .iter()
+            .find(|e| e.operation == operation)
+            .unwrap();
+        assert_eq!(evidence.kind, EvidenceKind::CapturedTranscript);
+        assert_eq!(evidence.source, SOURCE);
+        assert_eq!(evidence.cli_version, manifest["version"].as_str());
+        assert_eq!(evidence.platform, manifest["platformId"].as_str());
+    }
+
+    let pair = &manifest["twoTerminals"];
+    for writer in pair["writers"].as_object().unwrap().values() {
+        assert_eq!(writer["version"], manifest["version"]);
+        assert_eq!(writer["kind"], "interactive");
+        assert_eq!(writer["entrypoint"], "cli");
+        assert_eq!(writer["pidDomain"], "darwin");
+    }
+    let recordings = pair["transcripts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(std::iter::once(
+            &manifest["overlappingResume"]["transcript"],
+        ));
+    for recording in recordings {
+        let path = manifest_path
+            .parent()
+            .unwrap()
+            .join(recording["file"].as_str().unwrap());
+        let data = std::fs::read_to_string(path).unwrap();
+        assert_eq!(
+            recording["projectedRecords"].as_u64(),
+            Some(data.lines().count() as u64)
+        );
+    }
+}
+
 #[cfg(feature = "codex")]
 #[test]
 fn codex_protocol_provenance_is_synthetic_and_pinned() {

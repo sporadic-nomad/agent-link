@@ -39,6 +39,8 @@
 //! crate-internal `job` module (Windows Job Object and process snapshots, `windows-sys`),
 //! which PTY sessions use.
 
+#[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
+pub(crate) mod instance;
 #[cfg(any(windows, test))]
 pub(crate) mod job;
 

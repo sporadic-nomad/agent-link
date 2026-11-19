@@ -44,6 +44,8 @@ mod bus;
 mod child;
 mod foreground;
 pub(crate) mod input;
+#[cfg(all(feature = "turns", target_os = "macos", target_arch = "aarch64"))]
+mod leased;
 mod log;
 mod model;
 mod recovery;

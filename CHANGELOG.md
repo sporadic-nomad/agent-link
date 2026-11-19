@@ -8,6 +8,22 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- The optional `turns` feature exposes final replies from a controlled, direct Claude
+  Code 2.1.296 PTY on macOS arm64. Hosts enforce one writer per session and pass a
+  revocable `ExclusiveClaudeRoot`. Attachments start at verified EOF, return bounded
+  final text, and report gaps on loss of attribution or continuity. Admission checks
+  the merged PTY environment and revalidates the leased directory immediately before
+  spawn. The child addresses it by macOS volume and file ID. Host loggers can revoke
+  the lease during launch preparation or after spawn. Peer readers can verify the
+  initial session before a terminal’s first attachment and retry stale samples
+  across independent session switches and peer closures. Reservations affect peer
+  readers once process creation can begin. Peer checks account for directory aliases.
+  Confirmed exit closes the child's receiver even before PTY EOF. Truncation checks
+  start at first open, and a partial mode header keeps the same transcript pinned
+  across polls.
+  The Claude profile records writer-binding and final-text evidence separately.
+  [Guide](docs/agents-and-delivery.md#claude-pty-final-replies)
+
 - `AgentSpec::model` and `agent::ModelChoice` select a model and optional reasoning
   effort for profile-built PTY shell launches. Claude, Codex and Pi map the selection
   once for the lifetime of the shell. Custom profiles can implement

@@ -21,7 +21,7 @@ use crate::{Event, SpawnMode, SpawnSpec, Terminal};
 /// What an [`AgentTerminal`] runs and how its controller behaves.
 #[derive(Clone)]
 pub struct AgentSpec {
-    /// Private prototype. Capture only the provider's launch claim before spawning.
+    /// In-crate tests can inject a synthetic transcript writer at launch.
     #[cfg(all(test, unix))]
     pub(super) turn_launch: Option<super::turns::CaptureLaunch>,
     /// The agent; `None` for a bare shell: no launch, no gate, no activity and no agent
@@ -178,7 +178,7 @@ pub enum AgentState {
 pub struct AgentTerminal {
     term: Terminal,
     ctl: Arc<Controller>,
-    #[cfg(all(test, unix))]
+    #[cfg(all(unix, any(test, feature = "turns")))]
     turns: Option<super::turns::Slot>,
     /// Serializes ticket assignment through enqueue, without holding the state lock.
     queueing: Mutex<()>,
@@ -238,7 +238,78 @@ impl AgentTerminal {
         agent.limits.validate()?;
         let shell = Self::resolve_shell(&mut spec);
         let plan = agent.selected_launch(&spec, shell)?;
-        Self::spawn_prepared(spec, agent, shell, plan)
+        Self::spawn_prepared(
+            spec,
+            agent,
+            shell,
+            plan,
+            #[cfg(feature = "turns")]
+            None,
+        )
+    }
+
+    /// Starts a directly executed Claude Code 2.1.296 PTY whose session writers the
+    /// host controls through [super::turns::ExclusiveClaudeRoot]. The host supplies an
+    /// absolute native executable named `claude`, the Claude profile, and exactly one
+    /// fresh, canonical lowercase v4 UUID in its explicit `--session-id` argv.
+    /// The configuration root in the merged PTY environment, including terminal
+    /// identity settings and host overrides, must match the pinned lease. The child
+    /// receives a `CLAUDE_CONFIG_DIR` path based on the leased directory's macOS
+    /// volume and file ID. Immediately before spawn both this path and the lease
+    /// pathname must still resolve to that directory. Preparation reserves the UUID.
+    /// Peer readers treat the launch as a possible writer once process creation can begin.
+    ///
+    /// The admitted interactive options are `--model MODEL`, `--tools ""`,
+    /// `--strict-mcp-config` and `--settings` containing just a boolean `showTurnDuration`.
+    /// Startup performs local filesystem/process checks. Conflicting arguments, a
+    /// preexisting transcript, a revoked or mismatched lease, and exhausted launch
+    /// reservations return [crate::Error::InvalidInput] before spawn. Requires the
+    /// `turns` feature and native macOS arm64. Other platforms and shell launches return
+    /// [crate::Error::Unsupported]. Remaining errors follow [Self::spawn].
+    /// Use [Self::attach_claude_turns] to start observing.
+    #[cfg(feature = "turns")]
+    pub fn spawn_with_claude_turns(
+        mut spec: SpawnSpec,
+        agent: AgentSpec,
+        exclusive: &super::turns::ExclusiveClaudeRoot,
+    ) -> Result<(AgentTerminal, Receiver<Event>)> {
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            || !matches!(spec.mode, SpawnMode::Direct { .. })
+        {
+            return Err(crate::Error::Unsupported(
+                "Claude PTY turns require a native direct launch on macOS arm64".into(),
+            ));
+        }
+        agent.limits.validate()?;
+        let shell = Self::resolve_shell(&mut spec);
+        let plan = agent.selected_launch(&spec, shell)?;
+        Self::spawn_prepared(spec, agent, shell, plan, Some(exclusive))
+    }
+
+    /// Attaches at the verified EOF of the current session of a controlled Claude PTY.
+    /// This starts a dedicated worker and performs no filesystem I/O on the caller.
+    /// Poll [super::turns::TurnReceiver::status] for the baseline or a typed gap.
+    /// A new prompt and an explicit end marker are required for a reply.
+    ///
+    /// Ordinary spawns, ended launches and unsupported platforms return
+    /// [super::turns::AttachError::NoLaunch]. Invalid options or a revoked lease
+    /// return a typed error. One worker may run per terminal, with four active or
+    /// retiring workers across the process. After a gap, reattach when the worker
+    /// has retired to start at a new EOF.
+    #[cfg(feature = "turns")]
+    pub fn attach_claude_turns(
+        &self,
+        options: super::turns::TurnOptions,
+    ) -> std::result::Result<super::turns::TurnReceiver, super::turns::AttachError> {
+        #[cfg(unix)]
+        {
+            super::profiles::turns::claude::ClaudeSource::attach(self, options.into())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = options;
+            Err(super::turns::AttachError::NoLaunch)
+        }
     }
 
     /// Starts a PTY agent with consumer-owned CLI/MCP tools scoped to this launch.
@@ -301,7 +372,14 @@ impl AgentTerminal {
                 shell,
             )?
         };
-        Self::spawn_prepared(spec, agent, shell, Some(plan))
+        Self::spawn_prepared(
+            spec,
+            agent,
+            shell,
+            Some(plan),
+            #[cfg(feature = "turns")]
+            None,
+        )
     }
 
     fn spawn_prepared(
@@ -309,12 +387,13 @@ impl AgentTerminal {
         agent: AgentSpec,
         shell: ShellKind,
         prepared: Option<LaunchPlan>,
+        #[cfg(feature = "turns")] exclusive: Option<&super::turns::ExclusiveClaudeRoot>,
     ) -> Result<(AgentTerminal, Receiver<Event>)> {
         spec.screen.enabled = true;
         let direct = matches!(spec.mode, SpawnMode::Direct { .. });
         let mut launch_line = None;
-        #[cfg(all(test, unix))]
-        let mut turn_claim = None;
+        #[cfg(all(unix, any(test, feature = "turns")))]
+        let mut observer_plan = None;
         #[cfg(feature = "tools")]
         let mut tool_attachment = None;
         if let Some(profile) = &agent.profile {
@@ -330,10 +409,6 @@ impl AgentTerminal {
                 profile.launch(&agent.permissions, &agent.trust, &spec.cwd, shell)
             });
             plan.merge_env_into(&mut spec.env);
-            #[cfg(all(test, unix))]
-            if let Some(capture) = agent.turn_launch {
-                turn_claim = Some(capture(&spec, &plan)?);
-            }
             #[cfg(feature = "tools")]
             {
                 tool_attachment = plan.tools.clone();
@@ -344,6 +419,10 @@ impl AgentTerminal {
                     .as_ref()
                     .map(|_| spec.input_limits.max_write_bytes);
                 launch_line = Some(plan.launch_line(shell, limit)?);
+            }
+            #[cfg(all(unix, any(test, feature = "turns")))]
+            {
+                observer_plan = Some(plan);
             }
         }
         let trace = agent.trace.unwrap_or_else(|| {
@@ -357,7 +436,37 @@ impl AgentTerminal {
             .profile
             .as_ref()
             .map_or_else(String::new, |p| p.id().to_string());
-        let (term, events, watch) = Terminal::spawn_watched(spec)?;
+        #[cfg(feature = "turns")]
+        if exclusive.is_some() && profile_id != "claude" {
+            return Err(crate::Error::InvalidInput(
+                "Claude PTY turns require the Claude profile".into(),
+            ));
+        }
+        #[cfg(all(unix, any(test, feature = "turns")))]
+        let mut turn_claim = None;
+        #[cfg(all(unix, any(test, feature = "turns")))]
+        if let Some(plan) = observer_plan {
+            #[cfg(feature = "turns")]
+            if let Some(root) = exclusive {
+                turn_claim = Some(super::profiles::turns::claude::capture_exclusive(
+                    &mut spec, &plan, root,
+                )?);
+            }
+            #[cfg(test)]
+            if let Some(capture) = agent.turn_launch.as_ref().filter(|_| turn_claim.is_none()) {
+                turn_claim = Some(capture(&mut spec, &plan)?);
+            }
+        }
+        #[cfg(feature = "turns")]
+        let admit = exclusive.map(|root| move || root.admit_spawn());
+        #[cfg(not(feature = "turns"))]
+        let admit = None::<fn() -> Result<()>>;
+        let (term, events, watch) = Terminal::spawn_watched(spec, admit, || {
+            #[cfg(all(unix, any(test, feature = "turns")))]
+            if let Some(writer) = turn_claim.as_ref().and_then(|claim| claim.writer.as_ref()) {
+                writer.begin_spawn();
+            }
+        })?;
         // Wake notifications coalesce; the monitor always reads the current state.
         let (monitor_tx, monitor_rx) = bounded(1);
         let cfg = Config {
@@ -378,8 +487,13 @@ impl AgentTerminal {
         let has_profile = cfg.profile.is_some();
         let launches = cfg.launch_line.is_some();
         let ctl = Arc::new(Controller::new(cfg, term.handle(), monitor_tx));
-        #[cfg(all(test, unix))]
-        let turns = turn_claim.map(|claim| super::turns::Slot::new(claim, &ctl));
+        #[cfg(all(unix, any(test, feature = "turns")))]
+        let turns = turn_claim.map(|claim| {
+            if let Some(writer) = claim.writer.as_ref().filter(|_| direct) {
+                writer.spawned(&term);
+            }
+            super::turns::Slot::new(claim, &ctl)
+        });
         if direct && has_profile {
             // The child is the agent: armed from its first output on.
             ctl.update_quietly(|st, now| {
@@ -395,7 +509,7 @@ impl AgentTerminal {
         let agent_term = AgentTerminal {
             term,
             ctl,
-            #[cfg(all(test, unix))]
+            #[cfg(all(unix, any(test, feature = "turns")))]
             turns,
             queueing: Mutex::new(()),
             #[cfg(feature = "tools")]
@@ -760,7 +874,12 @@ impl AgentTerminal {
         &self.term
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(all(unix, any(test, feature = "turns")))]
+    pub(super) fn turn_claim(&self) -> Option<&super::turns::Claim> {
+        self.turns.as_ref().map(|slot| slot.claim.as_ref())
+    }
+
+    #[cfg(all(unix, any(test, feature = "turns")))]
     pub(super) fn attach_turns(
         &self,
         source: impl super::turns::Source,
@@ -807,7 +926,7 @@ impl Drop for Admission<'_> {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(unix, test))]
 mod limit_tests {
     use super::*;
     use crate::agent::Dialog;

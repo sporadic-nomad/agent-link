@@ -1,4 +1,3 @@
-use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -15,7 +14,7 @@ use crate::agent::{
 use crate::shell::ShellSpec;
 use crate::{Event, PtySize, SpawnMode, SpawnSpec};
 
-pub(super) const WAIT: Duration = Duration::from_secs(6);
+pub(in crate::agent) const WAIT: Duration = Duration::from_secs(6);
 const SIZE: PtySize = PtySize {
     rows: 24,
     cols: 100,
@@ -23,11 +22,11 @@ const SIZE: PtySize = PtySize {
 
 // The worker ceiling is process-wide. Hold the library's PTY fixture lock across
 // each scenario, including those deliberately running two or more terminals at once.
-pub(super) fn project() -> (std::sync::MutexGuard<'static, ()>, TempDir) {
+pub(in crate::agent) fn project() -> (std::sync::MutexGuard<'static, ()>, TempDir) {
     (crate::pty::test_spawn_lock(), tempfile::tempdir().unwrap())
 }
 
-pub(super) fn until(what: &str, mut ready: impl FnMut() -> bool) {
+pub(in crate::agent) fn until(what: &str, mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT;
     while !ready() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -35,18 +34,18 @@ pub(super) fn until(what: &str, mut ready: impl FnMut() -> bool) {
     }
 }
 
-pub(super) struct Pause {
+pub(in crate::agent) struct Pause {
     entered: Sender<()>,
     release: Receiver<()>,
 }
 
-pub(super) struct Barrier {
+pub(in crate::agent) struct Barrier {
     entered: Receiver<()>,
     release: Sender<()>,
 }
 
 impl Barrier {
-    pub(super) fn new() -> (Self, Pause) {
+    pub(in crate::agent) fn new() -> (Self, Pause) {
         let (enter, entered) = bounded(1);
         let (release, resume) = bounded(1);
         (
@@ -58,19 +57,19 @@ impl Barrier {
         )
     }
 
-    pub(super) fn wait(&self) {
+    pub(in crate::agent) fn wait(&self) {
         self.entered
             .recv_timeout(WAIT)
             .expect("worker reached barrier");
     }
 
-    pub(super) fn release(self) {
+    pub(in crate::agent) fn release(self) {
         let _ = self.release.try_send(());
     }
 }
 
 impl Pause {
-    pub(super) fn park(&self) {
+    pub(in crate::agent) fn park(&self) {
         let _ = self.entered.try_send(());
         // Dropping the fixture's sender during unwinding also releases the worker.
         let _ = self.release.recv_timeout(WAIT * 2);
@@ -114,7 +113,7 @@ impl AgentProfile for Profile {
     }
 }
 
-fn capture(spec: &SpawnSpec, plan: &LaunchPlan) -> crate::Result<Claim> {
+pub(super) fn capture(spec: &mut SpawnSpec, plan: &LaunchPlan) -> crate::Result<Claim> {
     // This fixture has a deliberately narrow launch grammar.
     let (flag, id) = match &spec.mode {
         SpawnMode::Direct { args, .. } if args.len() == 3 => (args[1].to_str(), args[2].to_str()),
@@ -127,10 +126,8 @@ fn capture(spec: &SpawnSpec, plan: &LaunchPlan) -> crate::Result<Claim> {
         .filter(|_| flag == Some("--session-id"))
         .and_then(|id| ProviderId::new(id).ok())
         .ok_or_else(|| crate::Error::InvalidInput("missing synthetic launch id".into()))?;
-    let root = spec
-        .env
-        .launch_value(OsStr::new("TURN_ROOT"))
-        .ok_or_else(|| crate::Error::InvalidInput("missing synthetic root".into()))?;
+    let [root] = spec.freeze_launch_env(["TURN_ROOT"]);
+    let root = root.ok_or_else(|| crate::Error::InvalidInput("missing synthetic root".into()))?;
     Claim::new(id, &spec.cwd, Path::new(&root))
 }
 
@@ -144,6 +141,16 @@ pub(super) struct Peer {
 
 impl Peer {
     pub(super) fn start(project: &Path, id: &str, shell: bool, monitor: Option<Pause>) -> Self {
+        Self::start_with_capture(project, id, shell, monitor, Arc::new(capture))
+    }
+
+    pub(super) fn start_with_capture(
+        project: &Path,
+        id: &str,
+        shell: bool,
+        monitor: Option<Pause>,
+        capture: CaptureLaunch,
+    ) -> Self {
         fs::write(project.join("peer.sh"), include_bytes!("peer.sh")).unwrap();
         let root = project.join("records");
         fs::create_dir_all(&root).unwrap();
@@ -348,7 +355,7 @@ impl Parser for JsonParser {
     }
 }
 
-pub(super) fn append(path: &Path, bytes: &[u8]) {
+pub(in crate::agent) fn append(path: &Path, bytes: &[u8]) {
     OpenOptions::new()
         .append(true)
         .create(true)
@@ -365,7 +372,7 @@ pub(super) fn turn(path: &Path, text: &str) {
     );
 }
 
-pub(super) fn observed(rx: &TurnReceiver, path: &Path) {
+pub(in crate::agent) fn observed(rx: &TurnReceiver, path: &Path) {
     let eof = path.metadata().unwrap().len();
     until("validated observer offset", || match rx.status() {
         Status::Active { offset, .. } => offset == eof,
@@ -374,14 +381,14 @@ pub(super) fn observed(rx: &TurnReceiver, path: &Path) {
     });
 }
 
-pub(super) fn gap(rx: &TurnReceiver, expected: Gap) {
+pub(in crate::agent) fn gap(rx: &TurnReceiver, expected: Gap) {
     until("sticky observation gap", || {
         rx.status() == Status::Gap(expected)
     });
     assert!(rx.try_recv().is_none());
 }
 
-pub(super) fn clock() -> (Sender<Instant>, Options) {
+pub(in crate::agent) fn clock() -> (Sender<Instant>, Options) {
     let (tx, ticks) = bounded(0);
     (
         tx,
@@ -392,8 +399,45 @@ pub(super) fn clock() -> (Sender<Instant>, Options) {
     )
 }
 
-pub(super) fn tick(clock: &Sender<Instant>) {
+pub(in crate::agent) fn tick(clock: &Sender<Instant>) {
     clock
         .send_timeout(Instant::now(), WAIT)
         .expect("reader awaiting next tick");
+}
+
+/// Let the direct child exit while its final output is blocked on a full subscriber.
+/// The caller can now exercise a queued pull before EOF or Exit reaches the monitor.
+pub(in crate::agent) fn with_undelivered_exit(
+    terminal: &crate::Terminal,
+    events: Receiver<Event>,
+    check: impl FnOnce(),
+) {
+    let full = terminal.subscribe();
+    let handle = terminal.handle();
+    let id = terminal.id();
+    let capacity = full.capacity().unwrap();
+    // Only one producer fills the queue; wake the peer after the last available slot.
+    let filler = std::thread::spawn(move || {
+        for _ in 0..capacity {
+            handle.publish(Event::Frame { id });
+        }
+    });
+    until("subscriber queue full", || {
+        events.try_iter().for_each(drop);
+        full.is_full()
+    });
+    let before = terminal.handle().output_chunks();
+    terminal.write(b"exit-peer\n").unwrap();
+    until("exit command reached blocked reader fanout", || {
+        terminal.handle().output_chunks() > before
+    });
+    // Observe kernel exit without updating the terminal's cached lifecycle.
+    let pid = terminal.pid().unwrap();
+    until("child exited with output fanout blocked", || {
+        crate::pty::peek_exit(pid).unwrap().is_some()
+    });
+    check();
+    drop(full);
+    drop(events);
+    filler.join().unwrap();
 }

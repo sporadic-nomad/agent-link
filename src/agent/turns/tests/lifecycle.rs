@@ -33,6 +33,34 @@ fn paused(peer: &Peer) -> (TurnReceiver, Barrier, Receiver<()>) {
     (rx, barrier, reset)
 }
 
+#[cfg(all(feature = "turns", target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn dropping_a_lease_with_a_paused_parser_discards_queued_and_staged_text() {
+    let (_lock, home) = project();
+    let root = home.path().join("records");
+    fs::create_dir(&root).unwrap();
+    let lease = Arc::new(ExclusiveClaudeRoot::new(root).unwrap());
+    let authority = lease.clone();
+    let capture = Arc::new(move |spec: &mut SpawnSpec, plan: &LaunchPlan| {
+        let mut claim = super::peer::capture(spec, plan)?;
+        authority.bind(&mut claim)?;
+        Ok(claim)
+    });
+    let peer = Peer::start_with_capture(home.path(), "revoked", false, None, capture);
+    let (rx, barrier, reset) = paused(&peer);
+    drop(lease);
+    assert_eq!(rx.status(), Status::Gap(Gap::AuthorityRevoked));
+    assert!(rx.try_recv().is_none());
+    barrier.release();
+    reset.recv_timeout(WAIT).unwrap();
+    assert!(matches!(
+        peer.term
+            .attach_turns(peer.source(), JsonParser::default(), Options::default()),
+        Err(AttachError::AuthorityRevoked)
+    ));
+    assert!(rx.try_recv().is_none());
+}
+
 #[test]
 fn a_paused_batch_loses_both_queued_and_staged_text_on_in_process_switch() {
     let (_lock, home) = project();
@@ -76,6 +104,70 @@ fn replacing_the_transcript_cuts_off_queued_replies_while_the_parser_is_blocked(
     barrier.release();
     reset.recv_timeout(WAIT).unwrap();
     gap(&rx, Gap::Replaced);
+}
+
+#[test]
+fn a_pull_detects_a_rewrite_or_truncation_while_the_parser_is_blocked() {
+    let (_lock, home) = project();
+    for reason in [Gap::Rewritten, Gap::Truncated] {
+        let id = if reason == Gap::Truncated {
+            "shortened"
+        } else {
+            "overwritten"
+        };
+        let peer = Peer::start(home.path(), id, false, None);
+        let (rx, barrier, reset) = paused(&peer);
+        let file = fs::OpenOptions::new().write(true).open(&peer.file).unwrap();
+        if reason == Gap::Truncated {
+            let Status::Active { offset, .. } = rx.status() else {
+                panic!("expected a committed cursor");
+            };
+            // Only the worker has sampled the longer file while parsing "pause".
+            file.set_len(offset).unwrap();
+        } else {
+            let contents = fs::read_to_string(&peer.file).unwrap();
+            file.write_all_at(b"other!", contents.find("queued").unwrap() as u64)
+                .unwrap();
+        }
+        assert!(matches!(rx.status(), Status::Active { .. }));
+        assert!(rx.try_recv().is_none());
+        assert_eq!(rx.status(), Status::Gap(reason));
+        barrier.release();
+        reset.recv_timeout(WAIT).unwrap();
+    }
+}
+
+#[test]
+fn growth_seen_by_a_pull_fences_the_next_pull_and_worker_pass() {
+    let (_lock, home) = project();
+    for next_is_worker in [false, true] {
+        let id = if next_is_worker { "worker" } else { "pull" };
+        let peer = Peer::start(home.path(), id, false, None);
+        let (clock, options) = clock();
+        let rx = peer
+            .term
+            .attach_turns(peer.source(), JsonParser::default(), options)
+            .unwrap();
+        observed(&rx, &peer.file);
+        turn(&peer.file, "first");
+        turn(&peer.file, "second");
+        tick(&clock);
+        observed(&rx, &peer.file);
+        let file = fs::OpenOptions::new().write(true).open(&peer.file).unwrap();
+        let committed = file.metadata().unwrap().len();
+
+        // The worker is parked until the next tick. Only the first pull samples
+        // this append, and the later truncation leaves every committed byte intact.
+        turn(&peer.file, "removed before parsing");
+        assert_eq!(rx.try_recv().unwrap().text, "first");
+        file.set_len(committed).unwrap();
+        if next_is_worker {
+            tick(&clock);
+        } else {
+            assert!(rx.try_recv().is_none());
+        }
+        gap(&rx, Gap::Truncated);
+    }
 }
 
 #[test]
@@ -156,6 +248,60 @@ impl Source for BetweenPasses {
         }
         self.pause_next = self.after_parse.try_recv().is_ok();
         self.writer.current(launch)
+    }
+}
+
+#[test]
+fn revalidation_after_the_last_byte_comparison_fences_switches_and_edits() {
+    let (_lock, home) = project();
+    for switch in [false, true] {
+        let peer = Peer::start(
+            home.path(),
+            if switch { "switch" } else { "edit" },
+            false,
+            None,
+        );
+        let (arm, after_parse) = bounded(1);
+        let (final_sample, pause) = Barrier::new();
+        let source = BetweenPasses {
+            writer: peer.source(),
+            after_parse,
+            pause_next: false,
+            pause,
+        };
+        let (parsed, pause) = Barrier::new();
+        let parser = JsonParser {
+            pause: Some(pause),
+            ..JsonParser::default()
+        };
+        let (clock, options) = clock();
+        let rx = peer.term.attach_turns(source, parser, options).unwrap();
+        observed(&rx, &peer.file);
+        turn(&peer.file, "pause");
+        tick(&clock);
+        parsed.wait();
+        arm.send(()).unwrap();
+        parsed.release();
+        final_sample.wait();
+        if switch {
+            peer.input("/clear");
+            until("writer changed session", || {
+                fs::read_to_string(&peer.witness)
+                    .unwrap()
+                    .starts_with("switch\nswitch-1\n")
+            });
+        } else {
+            let contents = fs::read_to_string(&peer.file).unwrap();
+            fs::write(&peer.file, contents.replace("pause", "changed")).unwrap();
+        }
+        final_sample.release();
+        if switch {
+            gap(&rx, Gap::SessionChanged);
+        } else {
+            // A changed file gets one fresh byte comparison before any reply is queued.
+            tick(&clock);
+            gap(&rx, Gap::Rewritten);
+        }
     }
 }
 
@@ -393,36 +539,10 @@ fn with_blocked_fanout_after_exit(check: impl FnOnce(&TurnReceiver, &Sender<Inst
     turn(&peer.file, "queued");
     tick(&clock);
     observed(&rx, &peer.file);
-    let terminal = peer.term.terminal();
-    let full = terminal.subscribe();
-    let handle = terminal.handle();
-    let id = terminal.id();
-    let capacity = full.capacity().unwrap();
-    // Only one producer fills the queue; wake the peer after the last available slot.
-    let filler = std::thread::spawn(move || {
-        for _ in 0..capacity {
-            handle.publish(Event::Frame { id });
-        }
+    with_undelivered_exit(peer.term.terminal(), peer.events, || {
+        assert!(matches!(rx.status(), Status::Active { .. }));
+        check(&rx, &clock);
     });
-    until("subscriber queue full", || {
-        peer.events.try_iter().for_each(drop);
-        full.is_full()
-    });
-    let before = terminal.handle().output_chunks();
-    peer.input("exit-peer");
-    until("exit command reached blocked reader fanout", || {
-        terminal.handle().output_chunks() > before
-    });
-    // Observe kernel exit without updating the terminal's cached lifecycle.
-    let pid = terminal.pid().unwrap();
-    until("child exited with output fanout blocked", || {
-        crate::pty::peek_exit(pid).unwrap().is_some()
-    });
-    assert!(matches!(rx.status(), Status::Active { .. }));
-    check(&rx, &clock);
-    drop(full);
-    drop(peer.events);
-    filler.join().unwrap();
 }
 
 #[test]

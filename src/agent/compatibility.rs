@@ -26,6 +26,8 @@ pub enum EvidenceKind {
     SyntheticFixture,
     /// Recorded terminal bytes; only the recorded scenes were observed.
     CapturedTerminal,
+    /// Recorded interactive CLI transcript and its paired launch or terminal observations.
+    CapturedTranscript,
     /// A check against a real CLI, scoped to the operation and context recorded.
     LiveCheck,
 }

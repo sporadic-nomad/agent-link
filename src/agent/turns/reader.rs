@@ -9,8 +9,8 @@ use crossbeam_channel::{bounded, select_biased};
 use super::stream::{Batch, Stream};
 use super::transcript::{MAX_NEW_BYTES, Pass, Prefix, Tail};
 use super::{
-    AttachError, Binding, Controller, Gap, Launch, Limits, Options, Parser, Permit, Record, Source,
-    Status, TurnReceiver,
+    AttachError, Binding, Controller, Gap, Launch, Limits, Opened, Options, Parser, Permit, Record,
+    Source, Status, TurnReceiver,
 };
 
 pub(super) fn spawn(
@@ -64,6 +64,7 @@ pub(super) fn spawn(
 }
 
 struct Reader {
+    opening: Option<Opened>,
     bound: Option<(Tail, Framer)>,
     pending: Option<Candidate>,
     buf: Vec<u8>,
@@ -81,6 +82,7 @@ struct Candidate {
 impl Reader {
     fn new(limits: Limits) -> Self {
         Self {
+            opening: None,
             bound: None,
             pending: None,
             buf: vec![0; limits.read_bytes.min(MAX_NEW_BYTES)],
@@ -96,9 +98,9 @@ impl Reader {
         stream: &Stream,
     ) -> Result<Pass, Gap> {
         let Some((tail, framer)) = &mut self.bound else {
-            let opened = match source.open(launch) {
+            let mut opened = match self.opening.take().map_or_else(|| source.open(launch), Ok) {
                 Ok(opened) => opened,
-                // Waiting for the initial source is the only retry.
+                // A missing path is retryable only before the first open.
                 Err(Gap::Missing) => {
                     launch.claim.root.check_name()?;
                     return Ok(Pass::Complete);
@@ -109,8 +111,12 @@ impl Reader {
                 return Ok(Pass::Complete);
             }
             opened.confirm(launch, source.current(launch)?)?;
+            if !source.header_ready(&mut opened)? {
+                self.opening = Some(opened);
+                return Ok(Pass::Complete);
+            }
             let tail = Tail::at_eof(opened)?;
-            tail.opened.check_name(launch)?;
+            tail.opened.confirm(launch, source.current(launch)?)?;
             let framer = Framer::new(self.limits, tail.mid_record());
             if stream.sample_terminal(true) && stream.bind(framer.status(&tail), &tail.opened) {
                 self.bound = Some((tail, framer));
@@ -133,15 +139,21 @@ impl Reader {
         }
         tail.opened.confirm(launch, source.current(launch)?)?;
         let bytes = &self.buf[..candidate.used];
-        let pass =
+        let mut pass =
             tail.validate_batch(&mut candidate.prefix, &framer.partial, bytes, prefix_budget)?;
+        if matches!(pass, Pass::Complete) {
+            if !stream.sample_terminal(true) {
+                return Ok(Pass::Complete);
+            }
+            tail.opened.confirm(launch, source.current(launch)?)?;
+            pass = tail.confirm_version(&mut candidate.prefix)?;
+        }
         if !matches!(pass, Pass::Complete) {
             self.pending = Some(candidate);
-        } else if stream.sample_terminal(true) {
-            tail.opened.check_name(launch)?;
+        } else {
             framer.advance(bytes, candidate.complete_bytes);
-            tail.advance(bytes);
-            stream.commit(framer.status(tail), candidate.replies);
+            tail.cursor.advance(bytes);
+            stream.commit(framer.status(tail), tail.cursor, candidate.replies);
         }
         Ok(pass)
     }
@@ -169,7 +181,7 @@ impl Framer {
     fn status(&self, tail: &Tail) -> Status {
         Status::Active {
             start: tail.start,
-            offset: tail.offset,
+            offset: tail.cursor.offset,
             incomplete_turns: self.incomplete,
         }
     }

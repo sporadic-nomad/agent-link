@@ -15,6 +15,7 @@
 //! | `rpc_launch()` (unattended) | [`CLAUDE_RPC_FLAGS`](claude::CLAUDE_RPC_FLAGS) + bypass mode (+ `--continue`) | [`CODEX_RPC_FLAGS`](codex::CODEX_RPC_FLAGS) + `-c approval_policy="never" -c sandbox_mode="danger-full-access"` | [`PI_RPC_FLAGS`](pi::PI_RPC_FLAGS) (+ `--continue`, or `--no-session` for a probe) | [`OPENCODE_RPC_FLAGS`](opencode::OPENCODE_RPC_FLAGS) + unattended env default | — |
 //! | title spinner | no (`✳`/`◐`) | Braille | not seen | not measured | not measured |
 //! | sync frames | VS Code identity only | always | always | once DECRQM 2026 is answered | not at cold launch |
+//! | PTY final replies (optional `turns`) | 2.1.296 on macOS arm64, direct launch with a host-enforced exclusive writer | — | — | — | — |
 //! | screen evidence | 2.1.293; live smoke 2.1.295 | 0.154.0 (dialog wording since 0.142.5) | 0.85.1 | 1.18.21 | trust screen: cursor-agent 2026.09.23 |
 //!
 //! OSC 9;4 progress was not seen on any agent (no real turn measured).
@@ -52,6 +53,10 @@ pub mod codex;
 pub mod cursor;
 pub mod opencode;
 pub mod pi;
+#[cfg(all(unix, any(test, feature = "turns")))]
+pub(in crate::agent) mod turns {
+    pub(in crate::agent) mod claude;
+}
 
 use std::fmt;
 use std::sync::Arc;

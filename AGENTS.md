@@ -14,6 +14,10 @@ The library has no UI or host-framework dependency. Optional `tools` prepares pe
 consumer-owned CLI/MCP attachments and owns temporary configuration through child
 teardown; consumers still implement tools, IPC and server lifecycle.
 
+Optional `turns` observes fresh final replies for direct Claude Code 2.1.296 PTYs on
+macOS arm64 with an explicit host-enforced exclusive writer lease. Its dedicated
+receiver reports attribution and continuity loss independently of delivery tickets.
+
 PTY recovery attachments expose process-local byte cursors, loss ranges and geometry;
 optional display snapshots are fenced to output but are not parser checkpoints.
 
@@ -33,7 +37,7 @@ does not share the daemon mutation IPC. Supervisor builds require a C compiler f
 - Rust 2024, minimum Rust version 1.85, MIT license. Check `Cargo.toml` for the current
   version and feature definitions.
 - Default features: `screen` and `agent`. Optional integrations: `rpc`, `codex`, `acp`,
-  `claude`, `probe`, `tools`, `tokio`, `transcript`, `observers` and `approvals`. `test-support`
+  `claude`, `probe`, `tools`, `tokio`, `turns`, `transcript`, `observers` and `approvals`. `test-support`
   is development-only and enables `agent-link-fake-agent`.
 - PTY/process operations use dedicated threads. Tokio provides optional adapters;
   keep the core usable without an async runtime.
@@ -103,6 +107,7 @@ that merely reproduce an implementation expression or unnecessarily expose priva
 | PTY/process lifecycle or event ordering | Module unit tests; `tests/pty_roundtrip.rs`, `tests/pty_windows.rs` |
 | Input admission or overload | Queue unit tests; `tests/input_limits.rs`, `tests/profile_isolation.rs` |
 | Agent startup, ownership, delivery or reset | State/startup unit tests; `tests/agent_startup.rs`, `tests/agent_delivery.rs`, `tests/agent_delivery_owner.rs`, `tests/agent_strict.rs`, `tests/agent_reset.rs` |
+| Claude PTY turn observation | `agent::turns`, `agent::profiles::turns::claude`, `tests/claude_turns.rs`, `tests/compatibility.rs` |
 | RPC framing, errors or privacy | `src/rpc/tests.rs`, framing/input unit tests, `tests/rpc_roundtrip.rs` |
 | Native adapter lifecycle or protocol | `src/codex/tests.rs`, `tests/codex_adapter.rs`, `src/claude/tests.rs`; synthetic pinned wire projections in `tests/fixtures/codex-app-server/` |
 | CLI profiles or launch behavior | `tests/profiles_fixtures.rs`, `tests/profiles_launch.rs`, startup replay tests |

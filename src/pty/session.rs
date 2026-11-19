@@ -176,25 +176,31 @@ impl Terminal {
         spec: SpawnSpec,
         hooks: SpawnHooks,
     ) -> Result<(Terminal, Receiver<Event>)> {
-        let (term, events, _) = Self::spawn_inner(spec, hooks, false)?;
+        let (term, events, _) =
+            Self::spawn_inner(spec, hooks, false, None::<fn() -> Result<()>>, || {})?;
         Ok((term, events))
     }
 
     /// [`spawn`](Self::spawn) plus the agent controller's bounded receiver, subscribed
     /// before the first read and served last without blocking publication (see `bus`).
     #[cfg(feature = "agent")]
-    pub(crate) fn spawn_watched(
+    pub(crate) fn spawn_watched<G>(
         spec: SpawnSpec,
+        admit: Option<impl FnOnce() -> Result<G>>,
+        begin_spawn: impl FnOnce(),
     ) -> Result<(Terminal, Receiver<Event>, Receiver<Event>)> {
-        let (term, events, watch) = Self::spawn_inner(spec, SpawnHooks::default(), true)?;
+        let (term, events, watch) =
+            Self::spawn_inner(spec, SpawnHooks::default(), true, admit, begin_spawn)?;
         let watch = watch.ok_or_else(|| Error::Spawn("no controller receiver".into()))?;
         Ok((term, events, watch))
     }
 
-    fn spawn_inner(
+    fn spawn_inner<G>(
         spec: SpawnSpec,
         hooks: SpawnHooks,
         watch: bool,
+        admit: Option<impl FnOnce() -> Result<G>>,
+        begin_spawn: impl FnOnce(),
     ) -> Result<(Terminal, Receiver<Event>, Option<Receiver<Event>>)> {
         #[cfg(not(windows))]
         let SpawnHooks {} = hooks;
@@ -207,10 +213,30 @@ impl Terminal {
         let pair = native_pty_system()
             .openpty(spec.size.to_portable())
             .map_err(|e| Error::Spawn(format!("openpty: {e:#}")))?;
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| Error::Spawn(format!("spawn {what}: {e:#}")))?;
+        let child = match admit {
+            #[cfg(all(feature = "turns", target_os = "macos", target_arch = "aarch64"))]
+            Some(admit) => {
+                let mut prepared = super::leased::prepare(&spec, pair.master.as_ref(), &cmd)
+                    .map_err(|e| Error::Spawn(format!("prepare {what}: {e}")))?;
+                // All host callbacks, including portable-pty's shell warnings, have
+                // returned. Only process creation can delay a concurrent revocation.
+                let child = {
+                    let _admission = admit()?;
+                    begin_spawn();
+                    prepared.spawn()
+                }
+                .map_err(|e| Error::Spawn(format!("spawn {what}: {e}")))?;
+                Box::new(child) as Box<dyn portable_pty::Child + Send + Sync>
+            }
+            #[cfg(not(all(feature = "turns", target_os = "macos", target_arch = "aarch64")))]
+            Some(_) => return Err(Error::Unsupported("leased PTY spawn".into())),
+            None => {
+                begin_spawn();
+                pair.slave
+                    .spawn_command(cmd)
+                    .map_err(|e| Error::Spawn(format!("spawn {what}: {e:#}")))?
+            }
+        };
         // The host's copy of the slave must go, or the output never ends when the child
         // does.
         drop(pair.slave);
@@ -460,9 +486,14 @@ impl std::fmt::Debug for Terminal {
 
 #[allow(dead_code)] // the agent controller and its delivery jobs use a subset each
 impl TerminalHandle {
-    #[cfg(all(test, unix, feature = "agent"))]
+    #[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
     pub(crate) fn turns_ended(&self) -> bool {
         self.inner.bus.turns_ended.load(Ordering::Acquire)
+    }
+
+    #[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
+    pub(crate) fn turn_end_signal(&self) -> Arc<AtomicBool> {
+        self.inner.bus.turns_ended.clone()
     }
 
     pub(crate) fn id(&self) -> SessionId {
@@ -643,7 +674,7 @@ impl Inner {
 
     fn try_wait(&self) -> Option<ExitInfo> {
         let exit = lock(&self.child).try_wait();
-        #[cfg(all(test, unix, feature = "agent"))]
+        #[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
         if exit.is_some() {
             self.bus.turns_ended.store(true, Ordering::Release);
         }
@@ -738,16 +769,40 @@ fn command(spec: &SpawnSpec) -> (CommandBuilder, ChildKind, String) {
         }
     };
     cmd.cwd(&spec.cwd);
+    apply_env(spec, &mut cmd);
+    (cmd, kind, what)
+}
+
+pub(super) fn apply_env(spec: &SpawnSpec, target: &mut impl crate::env::EnvTarget) {
     let (set, remove) = spec.identity.env();
-    spec.env.apply_over(&mut cmd, |cmd| {
+    spec.env.apply_over(target, |target| {
         for (key, val) in &set {
-            cmd.env(key, val);
+            target.set_env(key.as_ref(), val.as_ref());
         }
         for key in &remove {
-            cmd.env_remove(key);
+            target.remove_env(key.as_ref());
         }
     });
-    (cmd, kind, what)
+}
+
+#[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
+impl SpawnSpec {
+    /// Pin the requested settings (including an absent variable) from the merged
+    /// PTY environment so later command construction uses the same values.
+    pub(crate) fn freeze_launch_env<const N: usize>(
+        &mut self,
+        keys: [&str; N],
+    ) -> [Option<std::ffi::OsString>; N] {
+        let (cmd, ..) = command(self);
+        keys.map(|key| {
+            let value = cmd.get_env(key);
+            match value {
+                Some(value) => self.env.set(key, value),
+                None => self.env.remove(key),
+            };
+            value.map(ToOwned::to_owned)
+        })
+    }
 }
 
 /// The PTY's input side. On unix a duplicate of the master fd, not portable-pty's
@@ -1146,7 +1201,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let (term, events, watch) = {
                 let _spawn = crate::pty::test_spawn_lock();
-                Terminal::spawn_watched(sh(dir.path())).unwrap()
+                Terminal::spawn_watched(sh(dir.path()), None::<fn() -> Result<()>>, || {}).unwrap()
             };
             let handle = term.handle();
             // Far more chunks than the host's receiver holds.

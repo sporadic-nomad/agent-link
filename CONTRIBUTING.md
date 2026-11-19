@@ -45,6 +45,16 @@ tests unless explicitly intended: they can make API calls and change CLI state.
 Focused permission checks and follow-up validation are documented in
 [permission validation](docs/permission-validation.md).
 
+For Claude PTY transcripts, run the provider and core tests serially, then check the
+public admission contract. The native opt-in driver uses a loopback Messages peer
+and a pinned CLI on macOS arm64. [Capture and reproduction](tests/fixtures/transcripts/claude-2.1.296/README.md)
+
+```sh
+cargo test --locked --no-default-features --features turns --lib agent::profiles::turns::claude -- --test-threads=1
+cargo test --locked --no-default-features --features turns --lib agent::turns:: -- --test-threads=1
+cargo test --locked --no-default-features --features turns --test claude_turns --test compatibility -- --test-threads=1
+```
+
 Add a regression test for a behavioral fix, update public API documentation, and
 record externally visible changes in `CHANGELOG.md`. Preserve coverage for the
 minimal library (`--no-default-features`) and optional features. The gate checks `acp` and `codex`

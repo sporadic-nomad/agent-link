@@ -1,20 +1,45 @@
-//! Private Unix PTY experiment. Each receiver observes one controller launch and at most
-//! one corroborated writer/session/file binding. After loss, a new attachment starts at
-//! a new EOF. A ticket, idle screen or quiet file supplies no turn boundary.
+//! Final replies from a host-controlled Claude Code 2.1.296 PTY on macOS arm64.
 //!
-//! The provider must be able to distinguish its writer, including in-process session
-//! switches. Pulling queued text samples that evidence, the pinned file identity
-//! and terminal lifecycle independently of the parser.
-//! The core pins the launch directory and opened regular file, checks an overlap
-//! window at the cursor and rereads each candidate batch before committing it.
-//! These samples cannot prove arbitrary historical rewrites or distinguish concurrent
-//! writers with identical provider evidence.
+//! The host first enforces exclusive writer access to each conversation in a dedicated
+//! configuration root. Keep its [`ExclusiveClaudeRoot`] alive while admitting launches
+//! there. Each [`TurnReceiver`] observes one direct launch from a verified EOF. The
+//! caller can distinguish a quiet transcript from loss of continuity with [`TurnStatus`].
+//!
+//! ```no_run
+//! use agent_link::agent::{AgentSpec, AgentTerminal, profiles::ClaudeProfile};
+//! use agent_link::agent::turns::{ExclusiveClaudeRoot, TurnOptions, TurnReceiver};
+//! use agent_link::{Event, PtySize, SpawnSpec};
+//! use crossbeam_channel::Receiver;
+//! use std::{path::Path, sync::Arc};
+//!
+//! // The caller controls all writers in config and supplies a fresh v4 UUID per launch.
+//! fn observe(claude: &Path, project: &Path, config: &Path, uuid: &str)
+//!     -> Result<(ExclusiveClaudeRoot, AgentTerminal, Receiver<Event>, TurnReceiver),
+//!               Box<dyn std::error::Error>>
+//! {
+//!     let lease = ExclusiveClaudeRoot::new(config)?;
+//!     let mut spec = SpawnSpec::direct(claude, ["--session-id", uuid], project,
+//!                                     PtySize { rows: 40, cols: 120 });
+//!     spec.env.set("CLAUDE_CONFIG_DIR", config);
+//!     let agent = AgentSpec::new(Arc::new(ClaudeProfile::default()));
+//!     let (term, events) = AgentTerminal::spawn_with_claude_turns(spec, agent, &lease)?;
+//!     let turns = term.attach_claude_turns(TurnOptions::default())?;
+//!     Ok((lease, term, events, turns))
+//! }
+//! ```
+//!
+//! On a nonempty pull the receiver resamples the writer's current session, pinned file,
+//! cursor and terminal. A gap discards pending replies. A fresh attachment takes a new EOF
+//! baseline. These checks can miss a switch away and back between samples and edits to
+//! historical bytes outside the verified region. An external CLI can resume a live UUID
+//! and append indistinguishable replies, so hosts must keep enforcing writer exclusion
+//! until they revoke the lease.
 
+mod api;
 mod reader;
 mod stream;
 mod transcript;
 
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -22,22 +47,39 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 
+use super::AgentState;
+#[cfg(test)]
+use super::LaunchPlan;
 use super::state::Controller;
-use super::{AgentState, LaunchPlan};
-use crate::{SessionId, SpawnSpec};
+use crate::SessionId;
+#[cfg(test)]
+use crate::SpawnSpec;
 
-pub(super) use stream::TurnReceiver;
+#[cfg(feature = "turns")]
+pub use api::ExclusiveClaudeRoot;
+pub use api::{AttachError, TurnGap, TurnOptions, TurnReply, TurnStatus};
+pub(super) use api::{
+    TurnGap as Gap, TurnOptions as Limits, TurnReply as Reply, TurnStatus as Status,
+};
+pub use stream::TurnReceiver;
+pub(super) use transcript::DirectoryId;
 pub(super) use transcript::Opened;
 
 /// Runs before child creation on the actual Direct argv or prepared shell plan and the
 /// merged environment. The transcript directory must exist here so its identity
 /// covers later attachments. The transcript file itself may appear after launch.
-pub(super) type CaptureLaunch = fn(&SpawnSpec, &LaunchPlan) -> crate::Result<Claim>;
+#[cfg(test)]
+pub(super) type CaptureLaunch =
+    Arc<dyn Fn(&mut SpawnSpec, &LaunchPlan) -> crate::Result<Claim> + Send + Sync>;
 
 pub(super) struct Claim {
     pub(super) initial: ProviderId,
     pub(super) cwd: PathBuf,
-    pub(super) root: transcript::Root,
+    pub(super) root: Arc<transcript::Root>,
+    authority: Option<Arc<AtomicBool>>,
+    /// Present when the provider reserved a new launch before spawn. The slot and
+    /// retiring worker share its lifetime, including across a fresh attachment.
+    pub(super) writer: Option<Arc<dyn Witness>>,
 }
 
 impl Claim {
@@ -52,7 +94,13 @@ impl Claim {
             context: "pin transcript root".into(),
             source,
         })?;
-        Ok(Self { initial, cwd, root })
+        Ok(Self {
+            initial,
+            cwd,
+            root: Arc::new(root),
+            authority: None,
+            writer: None,
+        })
     }
 }
 
@@ -91,6 +139,13 @@ pub(super) struct Binding {
 }
 
 pub(super) trait Witness: Send + Sync + 'static {
+    /// Mark a reserved UUID as a possible writer immediately before process creation.
+    /// Called under the spawn admission guard. Must not run host code.
+    fn begin_spawn(&self) {}
+
+    /// Capture the direct child before returning the terminal. Called only in Direct mode.
+    fn spawned(&self, _term: &crate::Terminal) {}
+
     /// Sample independent current-writer evidence. Never infer it from a filename, PID
     /// or working directory. A shell's actual writer must corroborate the launch root.
     /// A pull may sample concurrently with the reader. This must use bounded local
@@ -106,10 +161,15 @@ pub(super) trait Source: Send + 'static {
         self.witness().current(launch)
     }
 
-    /// A provider can additionally check metadata records on this opened object.
+    /// Select and open the transcript. Missing evidence may be retried until first open.
     fn open(&mut self, launch: &Launch) -> Result<Opened, Gap> {
         let binding = self.current(launch)?;
         Opened::new(launch, binding)
+    }
+
+    /// Return false to wait for a partial header on this same pinned file.
+    fn header_ready(&mut self, _opened: &mut Opened) -> Result<bool, Gap> {
+        Ok(true)
     }
 }
 
@@ -127,54 +187,6 @@ pub(super) enum Record {
     End(Option<Reply>),
 }
 
-/// Builder shared with parsers so truncation happens before copying each text block.
-#[derive(Default)]
-pub(super) struct Reply {
-    pub(super) text: String,
-    pub(super) truncated: bool,
-}
-
-impl Reply {
-    pub(super) fn push(&mut self, text: &str, limit: usize) {
-        if self.truncated {
-            return;
-        }
-        let mut n = text.len().min(limit.saturating_sub(self.text.len()));
-        self.truncated = n < text.len();
-        while !text.is_char_boundary(n) {
-            n -= 1;
-        }
-        self.text.reserve_exact(n);
-        self.text.push_str(&text[..n]);
-    }
-}
-
-impl fmt::Debug for Reply {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Reply")
-            .field("bytes", &self.text.len())
-            .field("truncated", &self.truncated)
-            .finish()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Gap {
-    Missing,
-    Uncorroborated,
-    SessionChanged,
-    Replaced,
-    Rewritten,
-    Truncated,
-    Io,
-    Format,
-    Oversized,
-    Overflow,
-    Lifecycle,
-    Monitor,
-    WorkerPanic,
-}
-
 impl From<std::io::Error> for Gap {
     fn from(error: std::io::Error) -> Self {
         match error.kind() {
@@ -185,77 +197,22 @@ impl From<std::io::Error> for Gap {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Status {
-    Waiting,
-    Active {
-        start: u64,
-        offset: u64,
-        incomplete_turns: u32,
-    },
-    Gap(Gap),
-    Closed,
-}
-
-impl Status {
-    fn live(self) -> bool {
-        matches!(self, Self::Waiting | Self::Active { .. })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum AttachError {
-    InvalidLimits,
-    NoLaunch,
-    Busy,
-    Spawn,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct Limits {
-    pub(super) read_bytes: usize,
-    pub(super) records: usize,
-    pub(super) line_bytes: usize,
-    pub(super) reply_bytes: usize,
-    pub(super) queue_items: usize,
-    pub(super) queue_bytes: usize,
-}
-
-// Pilot ceilings, not measured provider defaults.
-const CEILINGS: Limits = Limits {
-    read_bytes: 64 * 1024,
-    records: 256,
-    line_bytes: 1024 * 1024,
-    reply_bytes: 256 * 1024,
-    queue_items: 16,
-    queue_bytes: 1024 * 1024,
-};
-
-impl Limits {
-    fn validate(self) -> Result<(), AttachError> {
-        for (value, max) in [
-            (self.read_bytes, CEILINGS.read_bytes),
-            (self.records, CEILINGS.records),
-            (self.line_bytes, CEILINGS.line_bytes),
-            (self.reply_bytes, CEILINGS.reply_bytes),
-            (self.queue_items, CEILINGS.queue_items),
-            (self.queue_bytes, CEILINGS.queue_bytes),
-        ] {
-            if !(1..=max).contains(&value) {
-                return Err(AttachError::InvalidLimits);
-            }
-        }
-        if self.reply_bytes > self.queue_bytes {
-            return Err(AttachError::InvalidLimits);
-        }
-        Ok(())
-    }
-}
+const CEILINGS: Limits = Limits::MAX;
 
 pub(super) struct Options {
     pub(super) limits: Limits,
     // Tests can advance a manual clock. The ordinary clock coalesces missed ticks.
     ticks: Receiver<Instant>,
+}
+
+#[cfg(feature = "turns")]
+impl From<TurnOptions> for Options {
+    fn from(limits: TurnOptions) -> Self {
+        Self {
+            limits,
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for Options {
@@ -270,12 +227,12 @@ impl Default for Options {
 /// A cached shell launch line can reuse a provider ID. The claim covers only the first
 /// launch. Reattaching within it still requires a fresh current-session witness.
 pub(super) struct Slot {
-    claim: Arc<Claim>,
+    pub(super) claim: Arc<Claim>,
     first_launch: u64,
     occupied: Arc<AtomicBool>,
 }
 
-const MAX_WORKERS: usize = 4;
+pub(super) const MAX_WORKERS: usize = 4;
 static WORKERS: AtomicUsize = AtomicUsize::new(0);
 
 struct Permit(Arc<AtomicBool>);
@@ -322,6 +279,14 @@ impl Slot {
         options: Options,
     ) -> Result<TurnReceiver, AttachError> {
         options.limits.validate()?;
+        if self
+            .claim
+            .authority
+            .as_ref()
+            .is_some_and(|a| !a.load(Ordering::Acquire))
+        {
+            return Err(AttachError::AuthorityRevoked);
+        }
         let permit = Permit::acquire(self)?;
         let launch = ctl.read(|st| {
             let lifecycle = st.lifecycle_revision();
@@ -345,4 +310,4 @@ impl Slot {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

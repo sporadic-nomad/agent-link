@@ -321,7 +321,7 @@ mod tests {
         spec.env.set("PS1", "$ ").set("ENV", "").set("HOME", dir);
         let (term, events, watch) = {
             let _spawn = crate::pty::test_spawn_lock();
-            Terminal::spawn_watched(spec).unwrap()
+            Terminal::spawn_watched(spec, None::<fn() -> crate::Result<()>>, || {}).unwrap()
         };
         let (tx, rx) = unbounded();
         let cfg = Config {

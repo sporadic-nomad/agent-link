@@ -83,7 +83,7 @@ pub struct RpcWriteReceipt {
 }
 
 impl RpcWriteReceipt {
-    #[cfg(all(test, any(feature = "codex", feature = "acp")))]
+    #[cfg(all(test, any(feature = "codex", feature = "acp", feature = "claude")))]
     pub(crate) fn finished_for_test(outcome: RpcWriteOutcome) -> Self {
         let state = ReceiptState::new();
         state.set(RpcWriteStatus::Finished(outcome));

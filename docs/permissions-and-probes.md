@@ -86,7 +86,9 @@ Call `TrustPolicy::unattended()` (`PreTrust::FlagsOnly, steer_dialogs: true`) fo
 Without spawning anything, `profile.compatibility()` returns `agent::compatibility::Compatibility`:
 - `revision: Option<&'static str>` — crate version (not CLI version).
 - `pty: Support`, `rpc_launch: Support`, `login_check: Support` (`Supported`, `Unsupported`, `Unknown`).
-- `evidence: &'static [Evidence]` — operation-scoped provenance records naming `operation`, `kind` (`Declaration`, `Negotiated`, `SyntheticFixture`, `CapturedTerminal`, `LiveCheck`), optional `cli_version` / `platform`, and `source`.
+- `evidence: &'static [Evidence]` — operation-scoped provenance records naming `operation`, `kind` (`Declaration`, `Negotiated`, `SyntheticFixture`, `CapturedTerminal`, `CapturedTranscript`, `LiveCheck`), optional `cli_version` / `platform`, and `source`.
+
+Claude has separate `CapturedTranscript` records for binding the writer and parsing final replies. Both cover direct PTY launches of Claude Code 2.1.296 on macOS arm64. The host must control the configuration directory and enforce one writer per observed session. The capture shows a second CLI resuming an active UUID and appending indistinguishable turns. [Paired recordings](../tests/fixtures/transcripts/claude-2.1.296/README.md)
 
 ---
 

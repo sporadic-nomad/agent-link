@@ -13,6 +13,23 @@ fn shared(limits: Limits, resume: Option<&str>) -> Arc<Shared> {
     })
 }
 #[test]
+fn native_event_preserves_literal_json_keys_in_extensions() {
+    let shared = shared(Limits::default(), None);
+    for (seq, value) in [json!("[]"), json!(42)].into_iter().enumerate() {
+        let extension = json!({ "$serde_json::private::RawValue": value });
+        let line = json!({ "type": "future", "extension": [extension.clone()] }).to_string();
+        route(&shared, seq as u64, &line).unwrap();
+        let native = shared
+            .events
+            .recv_until(deadline())
+            .unwrap()
+            .native
+            .unwrap();
+        assert_eq!(native["extension"][0], extension);
+    }
+}
+
+#[test]
 fn result_idle_tasks_unknown_identity_and_eof_are_separate() {
     let shared = shared(Limits::default(), None);
     route(

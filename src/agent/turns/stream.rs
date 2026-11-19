@@ -3,10 +3,14 @@
 //! can never migrate to a subsequent receiver. Lock order is controller then queue.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{
+    Arc, Mutex, Weak,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crossbeam_channel::Sender;
 
+use super::transcript::Cursor;
 use super::{AgentState, Controller, Gap, Launch, Limits, Opened, Reply, Status, Witness};
 
 pub(super) struct Batch {
@@ -26,12 +30,14 @@ impl Batch {
 struct Queue {
     status: Status,
     opened: Weak<Opened>,
+    cursor: Option<Cursor>,
     pending: Batch,
 }
 
 pub(super) struct Stream {
     ctl: Weak<Controller>,
     lifecycle: u64,
+    authority: Option<Arc<AtomicBool>>,
     queue: Mutex<Queue>,
     cancel: Sender<()>,
     limits: Limits,
@@ -47,9 +53,11 @@ impl Stream {
         Self {
             ctl: Arc::downgrade(ctl),
             lifecycle: launch.lifecycle,
+            authority: launch.claim.authority.clone(),
             queue: Mutex::new(Queue {
                 status: Status::Waiting,
                 opened: Weak::new(),
+                cursor: None,
                 pending: Batch::new(),
             }),
             cancel,
@@ -63,8 +71,16 @@ impl Stream {
         let access = |end: Option<Status>| {
             let mut q = self.queue.lock().unwrap_or_else(|err| err.into_inner());
             let was_live = q.status.live();
-            if let Some(end) = end.filter(|_| was_live) {
-                q.status = end;
+            if was_live {
+                if self
+                    .authority
+                    .as_ref()
+                    .is_some_and(|lease| !lease.load(Ordering::Acquire))
+                {
+                    q.status = Status::Gap(Gap::AuthorityRevoked);
+                } else if let Some(end) = end {
+                    q.status = end;
+                }
             }
             let value = act(&mut q);
             let detached = (was_live && !q.status.live())
@@ -172,13 +188,14 @@ impl Stream {
         })
     }
 
-    pub(super) fn commit(&self, status: Status, mut batch: Batch) -> bool {
+    pub(super) fn commit(&self, status: Status, cursor: Cursor, mut batch: Batch) -> bool {
         self.access(|q| {
             if !q.status.live() {
                 return false;
             }
             q.pending.replies.append(&mut batch.replies);
             q.pending.bytes += batch.bytes;
+            q.cursor = Some(cursor);
             q.status = status;
             true
         })
@@ -187,7 +204,8 @@ impl Stream {
 
 /// One pull receiver. Status is coalesced outside the queue; the first gap remains
 /// visible even if the worker has exited or the caller has never polled.
-pub(in crate::agent) struct TurnReceiver {
+#[must_use = "dropping the receiver stops observation"]
+pub struct TurnReceiver {
     stream: Arc<Stream>,
     launch: Weak<Launch>,
     witness: Weak<dyn Witness>,
@@ -208,27 +226,31 @@ impl TurnReceiver {
         }
     }
 
-    pub(in crate::agent) fn status(&self) -> Status {
+    /// Coalesced status. Samples local lifecycle and lease state without filesystem I/O.
+    pub fn status(&self) -> super::TurnStatus {
         self.stream.status()
     }
 
-    /// Pull one queued reply after sampling the writer, file identity and terminal.
+    /// Pull one queued reply after sampling the writer, file identity, cursor and terminal.
     /// An empty queue needs no I/O. A competing pull returns immediately.
-    pub(in crate::agent) fn try_recv(&self) -> Option<Reply> {
+    /// A nonempty pull does bounded synchronous local filesystem and process I/O. Hosts
+    /// should poll status to distinguish an empty queue from a gap or closure.
+    pub fn try_recv(&self) -> Option<super::TurnReply> {
         // Keep the same front item in place across the sample. The worker can append
         // or invalidate the queue in the meantime.
         let _pull = self.pulling.try_lock().ok()?;
-        let opened = self.stream.access(|q| {
+        let (opened, cursor) = self.stream.access(|q| {
             if !q.status.live() || q.pending.replies.is_empty() {
                 return None;
             }
-            q.opened.upgrade()
+            Some((q.opened.upgrade()?, q.cursor?))
         })?;
         let launch = self.launch.upgrade()?;
         let witness = self.witness.upgrade()?;
         if let Err(reason) = witness
             .current(&launch)
             .and_then(|current| opened.confirm(&launch, current))
+            .and_then(|()| cursor.confirm(&opened))
         {
             self.stream.finish(Status::Gap(reason));
             return None;
@@ -246,7 +268,8 @@ impl TurnReceiver {
         })
     }
 
-    pub(in crate::agent) fn stop(&self) {
+    /// Close this attachment, discard queued text, and wake its worker. Drop also stops it.
+    pub fn stop(&self) {
         self.stream.finish(Status::Closed);
     }
 }

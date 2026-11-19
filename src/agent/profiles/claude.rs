@@ -215,6 +215,13 @@ impl AgentProfile for ClaudeProfile {
     }
     fn compatibility(&self) -> crate::agent::compatibility::Compatibility {
         use crate::agent::compatibility::{Compatibility, Evidence, EvidenceKind, Support};
+        const WRITER_CAPTURE: Evidence = Evidence {
+            operation: "direct PTY transcript writer binding with host-enforced exclusive access",
+            kind: EvidenceKind::CapturedTranscript,
+            cli_version: Some("2.1.296"),
+            platform: Some("macos-aarch64"),
+            source: "tests/fixtures/transcripts/claude-2.1.296/capture.json",
+        };
         Compatibility {
             revision: Some(env!("CARGO_PKG_VERSION")),
             pty: Support::Supported,
@@ -231,6 +238,11 @@ impl AgentProfile for ClaudeProfile {
                 Evidence {
                     cli_version: Some("2.1.327"),
                     ..super::MODEL_ARGV_EVIDENCE
+                },
+                WRITER_CAPTURE,
+                Evidence {
+                    operation: "direct PTY final reply parsing",
+                    ..WRITER_CAPTURE
                 },
             ],
         }

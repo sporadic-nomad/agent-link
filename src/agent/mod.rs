@@ -76,8 +76,11 @@ mod startup;
 mod state;
 mod terminal;
 mod timing;
-#[cfg(all(test, unix))]
-mod turns;
+#[cfg(all(unix, any(test, feature = "turns")))]
+pub mod turns;
+#[cfg(all(not(unix), feature = "turns"))]
+#[path = "turns/unsupported.rs"]
+pub mod turns;
 mod verify;
 
 pub use activity::Activity;

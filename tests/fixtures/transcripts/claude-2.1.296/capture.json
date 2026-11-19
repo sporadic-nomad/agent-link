@@ -1,0 +1,245 @@
+{
+  "provider": "claude",
+  "kind": "captured-transcript",
+  "launchMode": "direct",
+  "operations": [
+    "direct PTY transcript writer binding with host-enforced exclusive access",
+    "direct PTY final reply parsing"
+  ],
+  "capturedOn": "2026-11-18",
+  "version": "2.1.296",
+  "platform": "macOS 26.3.1 (a), arm64",
+  "platformId": "macos-aarch64",
+  "binary": "@anthropic-ai/claude-code-darwin-arm64@2.1.296",
+  "cwd": "/fixture/project",
+  "configRoot": "/fixture/config",
+  "twoTerminals": {
+    "launches": [
+      {
+        "pid": 4101,
+        "argv": [
+          "/fixture/bin/claude",
+          "--session-id",
+          "00000000-0000-4000-8000-000000000001",
+          "--model",
+          "claude-sonnet-4-6",
+          "--strict-mcp-config",
+          "--tools",
+          "",
+          "--settings",
+          "{\"showTurnDuration\": true}"
+        ]
+      },
+      {
+        "pid": 4102,
+        "argv": [
+          "/fixture/bin/claude",
+          "--session-id",
+          "00000000-0000-4000-8000-000000000002",
+          "--model",
+          "claude-sonnet-4-6",
+          "--strict-mcp-config",
+          "--tools",
+          "",
+          "--settings",
+          "{\"showTurnDuration\": false}"
+        ]
+      }
+    ],
+    "writers": {
+      "A-start": {
+        "pid": 4101,
+        "sessionId": "00000000-0000-4000-8000-000000000001",
+        "cwd": "/fixture/project",
+        "startedAt": 1795040475557,
+        "version": "2.1.296",
+        "kind": "interactive",
+        "entrypoint": "cli",
+        "pidDomain": "darwin"
+      },
+      "B-start": {
+        "pid": 4102,
+        "sessionId": "00000000-0000-4000-8000-000000000002",
+        "cwd": "/fixture/project",
+        "startedAt": 1795040475557,
+        "version": "2.1.296",
+        "kind": "interactive",
+        "entrypoint": "cli",
+        "pidDomain": "darwin"
+      },
+      "A-interrupt": {
+        "pid": 4101,
+        "sessionId": "00000000-0000-4000-8000-000000000001",
+        "cwd": "/fixture/project",
+        "startedAt": 1795040475557,
+        "version": "2.1.296",
+        "kind": "interactive",
+        "entrypoint": "cli",
+        "pidDomain": "darwin"
+      },
+      "A-clear": {
+        "pid": 4101,
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "cwd": "/fixture/project",
+        "startedAt": 1795040475557,
+        "version": "2.1.296",
+        "kind": "interactive",
+        "entrypoint": "cli",
+        "pidDomain": "darwin"
+      },
+      "A-end": {
+        "pid": 4101,
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "cwd": "/fixture/project",
+        "startedAt": 1795040475557,
+        "version": "2.1.296",
+        "kind": "interactive",
+        "entrypoint": "cli",
+        "pidDomain": "darwin"
+      },
+      "B-end": {
+        "pid": 4102,
+        "sessionId": "00000000-0000-4000-8000-000000000002",
+        "cwd": "/fixture/project",
+        "startedAt": 1795040475557,
+        "version": "2.1.296",
+        "kind": "interactive",
+        "entrypoint": "cli",
+        "pidDomain": "darwin"
+      }
+    },
+    "visible": {
+      "A-short": [
+        "⏺ Copper pebble",
+        "✻ Brewed for 0s · done 11:21 PM"
+      ],
+      "B-short": [
+        "⏺ Violet acorn"
+      ],
+      "A-interrupt": [
+        "⏺ Copper pebble",
+        "✻ Brewed for 0s · done 11:21 PM",
+        "⏺ Incomplete moss",
+        "⎿  Interrupted · What should Claude do instead?"
+      ],
+      "A-long": [
+        "⏺ Copper pebble",
+        "✻ Brewed for 0s · done 11:21 PM",
+        "⏺ Incomplete moss",
+        "⎿  Interrupted · What should Claude do instead?",
+        "⏺ Amber petal",
+        "⏺ Second petal",
+        "✻ Baked for 1m 6s · done 11:22 PM"
+      ],
+      "B-long": [
+        "⏺ Violet acorn",
+        "⏺ Silver pumice"
+      ],
+      "A-end": [
+        "⏺ Lime button",
+        "✻ Churned for 0s · done 11:22 PM"
+      ]
+    },
+    "transcripts": [
+      {
+        "file": "session-a.jsonl",
+        "rawMaxLineBytes": 27702,
+        "rawMaxSelectedLineBytes": 1218,
+        "projectedRecords": 12,
+        "maxContentBlocksPerRecord": 1
+      },
+      {
+        "file": "session-b.jsonl",
+        "rawMaxLineBytes": 27702,
+        "rawMaxSelectedLineBytes": 1217,
+        "projectedRecords": 8,
+        "maxContentBlocksPerRecord": 1
+      },
+      {
+        "file": "after-clear.jsonl",
+        "rawMaxLineBytes": 27702,
+        "rawMaxSelectedLineBytes": 1151,
+        "projectedRecords": 8,
+        "maxContentBlocksPerRecord": 1
+      }
+    ]
+  },
+  "overlappingResume": {
+    "launches": [
+      {
+        "pid": 4103,
+        "argv": [
+          "/fixture/bin/claude",
+          "--session-id",
+          "00000000-0000-4000-8000-000000000004",
+          "--model",
+          "claude-sonnet-4-6",
+          "--strict-mcp-config",
+          "--tools",
+          "",
+          "--settings",
+          "{\"showTurnDuration\": true}"
+        ]
+      },
+      {
+        "pid": 4104,
+        "argv": [
+          "/fixture/bin/claude",
+          "--resume",
+          "00000000-0000-4000-8000-000000000004",
+          "--model",
+          "claude-sonnet-4-6",
+          "--strict-mcp-config",
+          "--tools",
+          "",
+          "--settings",
+          "{\"showTurnDuration\": false}"
+        ]
+      }
+    ],
+    "writers": [
+      {
+        "pid": 4103,
+        "sessionId": "00000000-0000-4000-8000-000000000004",
+        "cwd": "/fixture/project",
+        "startedAt": 1795040671052,
+        "version": "2.1.296",
+        "kind": "interactive",
+        "entrypoint": "cli",
+        "pidDomain": "darwin"
+      },
+      {
+        "pid": 4104,
+        "sessionId": "00000000-0000-4000-8000-000000000004",
+        "cwd": "/fixture/project",
+        "startedAt": 1795040673519,
+        "version": "2.1.296",
+        "kind": "interactive",
+        "entrypoint": "cli",
+        "pidDomain": "darwin"
+      }
+    ],
+    "visible": {
+      "A-first": [
+        "⏺ Copper pebble"
+      ],
+      "B-end": [
+        "⏺ Copper pebble",
+        "⏺ Violet acorn"
+      ],
+      "A-end": [
+        "⏺ Copper pebble",
+        "⏺ Lime button"
+      ]
+    },
+    "transcript": {
+      "file": "overlap.jsonl",
+      "rawMaxLineBytes": 27702,
+      "rawMaxSelectedLineBytes": 1218,
+      "projectedRecords": 11,
+      "maxContentBlocksPerRecord": 1
+    }
+  },
+  "largestSampledWriterBytes": 535,
+  "executableSha256": "c9b5341637becbd423ddffc5b254afb645682a3868cb708bbc6cc0e7bb419937"
+}

@@ -188,7 +188,7 @@ impl ChildSlot {
     }
 
     /// unix: SIGKILL the foreground job's group when it is not the child's own, then the
-    /// child's group (it leads one: portable-pty starts it with `setsid`).
+    /// child's group (the PTY spawn makes it a session leader with `setsid`).
     #[cfg(unix)]
     fn kill_tree(&mut self, fg: Option<i32>) {
         let own = self.pid.and_then(|pid| i32::try_from(pid).ok());
