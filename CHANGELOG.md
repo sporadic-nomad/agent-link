@@ -6,6 +6,8 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-11-19
+
 ### Added
 
 - `turns` adds isolated Codex, Pi and Cursor PTY transcript receivers on macOS arm64.
@@ -61,7 +63,7 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
-- For the next 0.x minor release, exhaustive `AgentSpec` literals must add
+- When upgrading from 0.2, exhaustive `AgentSpec` literals must add
   `model: None` to keep the previous launch behavior. `AgentSpec::new`,
   `AgentSpec::default` and struct update syntax inherit that default.
 

@@ -6,7 +6,7 @@ no UI or host-framework dependency: your application owns rendering and UX while
 manages child lifecycles, bounded event streams, startup steering, verified message delivery
 and protocol framing.
 
-> **Version:** `0.2.0` · **Edition:** Rust 2024 · **MSRV:** 1.85 · **License:** MIT
+> **Version:** `0.3.0` · **Edition:** Rust 2024 · **MSRV:** 1.85 · **License:** MIT
 
 Only **macOS** has verified native runtime results. Linux and Windows runtime support
 remains unverified; see [platform evidence](../README.md#platforms). The built-in Cursor
@@ -48,15 +48,15 @@ Add the crate from crates.io. Choose one dependency entry:
 ```toml
 [dependencies]
 # Default: PTY + headless screen (`vt100`, `regex`) + interactive agent profiles
-agent-link = "0.2"
+agent-link = "0.3"
 
 # Minimal core: PTY sessions, env, shell, identity, resolve, proc only
-# agent-link = { version = "0.2", default-features = false }
+# agent-link = { version = "0.3", default-features = false }
 
 # Common combinations
-# agent-link = { version = "0.2", features = ["rpc", "probe", "tokio"] }
-# agent-link = { version = "0.2", features = ["codex", "acp", "claude", "approvals"] }
-# agent-link = { version = "0.2", features = ["tools", "codex"] }
+# agent-link = { version = "0.3", features = ["rpc", "probe", "tokio"] }
+# agent-link = { version = "0.3", features = ["codex", "acp", "claude", "approvals"] }
+# agent-link = { version = "0.3", features = ["tools", "codex"] }
 ```
 
 For development, use `{ path = "../agent-link" }` instead of the version.

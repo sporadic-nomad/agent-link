@@ -6,7 +6,7 @@ does not implement a CLI, MCP server, IPC bridge or application actions. It inst
 nothing globally and writes neither user nor project MCP configuration.
 
 ```toml
-agent-link = { version = "0.2", features = ["tools", "codex"] }
+agent-link = { version = "0.3", features = ["tools", "codex"] }
 ```
 
 ## Describe the application's tools

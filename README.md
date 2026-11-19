@@ -14,7 +14,7 @@ The crate has no UI and no host-framework dependency: a desktop app, a TUI or a 
 harness renders the byte stream itself and drives the agent through a synchronous,
 thread-backed API. Async adapters for Tokio sit behind a feature.
 
-**Version: 0.2.0.** A standalone library for desktop apps, TUIs, services and
+**Version: 0.3.0.** A standalone library for desktop apps, TUIs, services and
 test harnesses. Before 1.0, minor releases may introduce breaking API changes. See the
 [user manual](docs/README.md) for usage guides, or
 [release preparation](CONTRIBUTING.md#release-preparation) for publication requirements.
@@ -71,9 +71,9 @@ Add the crate from crates.io:
 
 ```toml
 [dependencies]
-agent-link = "0.2" # screen + agent
-# agent-link = { version = "0.2", default-features = false }
-# agent-link = { version = "0.2", features = ["rpc", "probe", "tokio"] }
+agent-link = "0.3" # screen + agent
+# agent-link = { version = "0.3", default-features = false }
+# agent-link = { version = "0.3", features = ["rpc", "probe", "tokio"] }
 # Optional native/presentation features: "acp", "claude", "codex", "approvals", "observers", "transcript"
 # Add "tools" for application CLI/MCP attachments.
 ```

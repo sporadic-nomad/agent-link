@@ -17,13 +17,13 @@ Add `agent-link` from crates.io to `Cargo.toml`:
 ```toml
 [dependencies]
 # Default features: `screen` + `agent`
-agent-link = "0.2"
+agent-link = "0.3"
 
 # Minimal PTY-only build (no vt100, regex, or agent profiles)
-# agent-link = { version = "0.2", default-features = false }
+# agent-link = { version = "0.3", default-features = false }
 
 # Add headless stdio RPC, CLI probes, or Tokio adapters
-# agent-link = { version = "0.2", features = ["rpc", "probe", "tokio"] }
+# agent-link = { version = "0.3", features = ["rpc", "probe", "tokio"] }
 ```
 
 For development, use `{ path = "../agent-link" }` or
