@@ -165,6 +165,22 @@ between a check and its write.
 If a redraw invalidates the observation, delivery checks again. An unavailable check
 at the end of the verification window gives `SubmitUnverified`.
 
+| Built-in profile | Measured screen that takes keyboard input |
+| --- | --- |
+| Claude Code 2.1.296 | `AskUserQuestion` single and multiple questions, multi-select, and the final answer review. [Recorded menu](../tests/fixtures/claude-2.1.296-question-single.txt) · [Recorded review](../tests/fixtures/claude-2.1.296-question-multipage-review.txt) |
+| Codex CLI 0.154.0 | Plan mode `request_user_input`, including multiple pages and the notes editor. Its ordinary ready header can remain visible above the active question. [Recorded Plan question](../tests/fixtures/codex-0.154.0-question-plan.txt) · [Recorded notes](../tests/fixtures/codex-0.154.0-question-notes-empty.txt) |
+| OpenCode 1.18.21 | The `question` picker with numbered choices, a custom-answer row and selection controls. [Recorded picker](../tests/fixtures/opencode-1.18.21-question.txt) |
+| Cursor 2026.11.13-eacade1 | Shell approval offering “Run (once)” and “Skip & tell the agent what to do instead”. [Recorded renderer](../tests/fixtures/cursor-2026.11.13-shell-approval-renderer.txt) |
+
+The Claude, Codex and OpenCode recordings used isolated CLI homes and local model peers
+on macOS arm64. Two Claude replies quote the menu text above a fresh composer.
+[Short reply](../tests/fixtures/claude-2.1.296-prose-dialog-footer.txt) · [Scrolled reply](../tests/fixtures/claude-2.1.296-long-reply-select-hint.txt)
+
+The Cursor recording used the official Darwin arm64 distribution's `decision-surface`
+component, shell-decision option builder and Ink terminal renderer with `pwd` as
+sample input. It measures recognition of that menu. Authenticated startup, composer
+behavior and command execution require separate evidence. [Capture metadata](../tests/fixtures/cursor-2026.11.13-shell-approval-renderer.meta)
+
 ### `Ticket` and `DeliveryOutcome`
 
 `send()`, `reset()`, and `reset_and_send()` return a `Ticket` immediately:
@@ -334,7 +350,7 @@ Implement `agent::AgentProfile` (`Send + Sync`) to support another CLI or custom
   - `dialog(&self, text: &str) -> Option<Dialog>` — report startup prompts here. The startup gate can steer them using `key`. A `None` key leaves the prompt to the user. The method accepts screen text or raw rolling output, which you can normalize with `screen::normalize(text)`.
   - `input_ready(&self, screen: &str) -> bool` — recognize the ready composer; return `false` for dialogs or unreadable screens.
 - **Important defaulted methods:**
-  - `question_dialog(&self, screen: &str) -> bool` — recognize a question currently taking keyboard input. The default returns `false`, which all built-in profiles currently inherit. Use `detect::dialog_at_bottom` with markers from a recorded version of the CLI. It skips blank rows and recognized rules or box edges below the footer. A redrawn empty composer such as `❯` closes the block.
+  - `question_dialog(&self, screen: &str) -> bool` — recognize a question currently taking keyboard input. The default returns `false`. Claude, Codex, OpenCode and Cursor override it for the measured layouts above. Use `detect::dialog_at_bottom` with markers from a recorded version of the CLI. It skips blank rows and recognized rules or box edges below the footer. A redrawn empty composer such as `❯` closes the block.
   - `launchers(&self) -> &'static [&'static str]`
   - `launch(&self, perms, trust, cwd, shell) -> LaunchPlan`
   - `model_args(&self, choice: &ModelChoice, base_args: &[String]) -> Result<Vec<String>>` — return unquoted words for the entire selection. Check the base arguments for duplicate settings of the requested fields in the CLI's option syntax. Return `InvalidInput` for a conflict and `Unsupported` for an unmapped choice or effort. The default returns `Unsupported`.

@@ -5,6 +5,7 @@
 //! |---|---|
 //! | `launchers()` | `codex` |
 //! | `launch()` | `codex`; unattended: `--dangerously-bypass-approvals-and-sandbox`; always `-c check_for_update_on_startup=false`; pre-trust: `-c projects={"<cwd>"={trust_level="trusted"}}` (writes nothing; not under cmd.exe) |
+//! | `question_dialog()` | Plan mode `request_user_input` choices and notes editor (0.154.0) |
 //! | `reset_command()` | `/clear` |
 //! | `login_check()` | `codex login status`; signed out: `Not logged in` |
 //! | `rpc_launch()` | `codex` + [`CODEX_RPC_FLAGS`] + unattended config overrides (no resume flag); explicit policy through `rpc_launch_with_options()` |
@@ -16,7 +17,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::agent::detect::{has_all, has_any, selected_option};
+use crate::agent::detect::{dialog_at_bottom, has_all, has_any, selected_option};
 use crate::agent::launch::toml_basic_string;
 use crate::agent::{
     AgentProfile, Dialog, DialogKind, LaunchPlan, LoginCheck, ModelChoice, Permissions, RpcLaunch,
@@ -162,6 +163,13 @@ impl AgentProfile for CodexProfile {
             login_check: Support::Supported,
             evidence: &[
                 Evidence {
+                    operation: "question dialog recognition",
+                    kind: EvidenceKind::CapturedTerminal,
+                    cli_version: Some("0.154.0"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/codex-0.154.0-question-plan.bin",
+                },
+                Evidence {
                     operation: "ready screen recognition",
                     kind: EvidenceKind::CapturedTerminal,
                     cli_version: Some("0.154.0"),
@@ -207,6 +215,26 @@ impl AgentProfile for CodexProfile {
             return None;
         }
         dialog_in(&text)
+    }
+
+    fn question_dialog(&self, screen: &str) -> bool {
+        dialog_at_bottom(
+            screen,
+            24,
+            "unanswered)",
+            &["tab to add notes | enter to submit"],
+            "esc to interrupt",
+        ) || ["enter to submit answer", "enter to submit all"]
+            .iter()
+            .any(|end| {
+                dialog_at_bottom(
+                    screen,
+                    24,
+                    "unanswered)",
+                    &["tab or esc to clear notes |"],
+                    end,
+                )
+            })
     }
 
     fn input_ready(&self, screen: &str) -> bool {

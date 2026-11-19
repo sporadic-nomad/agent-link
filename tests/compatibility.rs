@@ -42,6 +42,42 @@ fn profile_evidence_artifacts_and_recorded_versions_exist() {
 }
 
 #[test]
+fn question_recognition_names_the_recorded_layout_for_each_builtin() {
+    let registry = ProfileRegistry::builtin();
+    for (id, version, fixture) in [
+        ("claude", "2.1.296", "claude-2.1.296-question-single.bin"),
+        ("codex", "0.154.0", "codex-0.154.0-question-plan.bin"),
+        ("opencode", "1.18.21", "opencode-1.18.21-question.bin"),
+        (
+            "cursor",
+            "2026.11.13-eacade1",
+            "cursor-2026.11.13-shell-approval-renderer.bin",
+        ),
+    ] {
+        let profile = registry.get(id).unwrap();
+        let record = profile
+            .compatibility()
+            .evidence
+            .iter()
+            .find(|e| e.operation == "question dialog recognition")
+            .unwrap();
+        assert_eq!(record.kind, EvidenceKind::CapturedTerminal);
+        assert_eq!(record.source, format!("tests/fixtures/{fixture}"));
+        assert_eq!(record.cli_version, Some(version));
+        assert_eq!(record.platform, Some("macos-aarch64"));
+    }
+    assert!(
+        registry
+            .get("pi")
+            .unwrap()
+            .compatibility()
+            .evidence
+            .iter()
+            .all(|e| e.operation != "question dialog recognition")
+    );
+}
+
+#[test]
 fn claude_writer_binding_and_final_reply_evidence_match_the_paired_capture() {
     const SOURCE: &str = "tests/fixtures/transcripts/claude-2.1.296/capture.json";
     let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SOURCE);

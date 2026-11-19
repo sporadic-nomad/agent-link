@@ -38,7 +38,11 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   outcome is `ShellOnly`. Other or unknown foreground owners give `ForegroundUnproven`.
   Profiles can match recorded layouts with `agent::detect::dialog_at_bottom`, which
   treats a bare composer prompt below the footer as the end of the question.
-  The hook defaults to `false` and currently requires a custom profile.
+  The Claude, Codex, OpenCode and Cursor profiles now recognize their recorded
+  question layouts by default. This includes Claude's answer review, Codex Plan
+  selections and notes, OpenCode's question picker and Cursor's shell approval menu.
+  The Cursor recording exercises its packaged renderer in isolation. Pi and custom
+  profiles retain the default `false` predicate.
 - `AgentProfile::reset_rejected` lets a PTY profile recognize a refusal after an
   explicit reset. The built-in Codex profile recognizes the busy-turn `/clear`
   diagnostic recorded with Codex CLI 0.169.0. A recognized refusal now gives

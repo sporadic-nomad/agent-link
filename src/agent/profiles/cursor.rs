@@ -8,6 +8,7 @@
 //! |---|---|
 //! | `launchers()` | `cursor-agent`, `agent` (never `cursor`: that is the editor) |
 //! | `launch()` | `agent`; unattended: `--force` (YOLO; explicit deny rules still apply); pre-trust: `--trust` (**saves** a trust record per cwd) |
+//! | `question_dialog()` | shell approval with Run/Skip options (2026.11.13-eacade1 isolated packaged renderer) |
 //! | `reset_command()` | `/new` |
 //! | `login_check()` | none |
 //! | `rpc_launch()` | none |
@@ -18,7 +19,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::agent::detect::{from_last, has_all, selected_option};
+use crate::agent::detect::{dialog_at_bottom, from_last, has_all, selected_option};
 use crate::agent::{
     AgentProfile, Dialog, DialogKind, LaunchPlan, Permissions, ShellKind, SignalHints, TrustKey,
     TrustPolicy, Unlock,
@@ -70,13 +71,22 @@ impl AgentProfile for CursorProfile {
             pty: Support::Supported,
             rpc_launch: Support::Unsupported,
             login_check: Support::Unsupported,
-            evidence: &[Evidence {
-                operation: "trust screen recognition",
-                kind: EvidenceKind::CapturedTerminal,
-                cli_version: Some("2026.09.23-86fc751"),
-                platform: None,
-                source: "tests/fixtures/cursor-2026.09.23-trust.bin",
-            }],
+            evidence: &[
+                Evidence {
+                    operation: "trust screen recognition",
+                    kind: EvidenceKind::CapturedTerminal,
+                    cli_version: Some("2026.09.23-86fc751"),
+                    platform: None,
+                    source: "tests/fixtures/cursor-2026.09.23-trust.bin",
+                },
+                Evidence {
+                    operation: "question dialog recognition",
+                    kind: EvidenceKind::CapturedTerminal,
+                    cli_version: Some("2026.11.13-eacade1"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/cursor-2026.11.13-shell-approval-renderer.bin",
+                },
+            ],
         }
     }
 
@@ -98,6 +108,16 @@ impl AgentProfile for CursorProfile {
             kind: DialogKind::Trust,
             key,
         })
+    }
+
+    fn question_dialog(&self, screen: &str) -> bool {
+        dialog_at_bottom(
+            screen,
+            24,
+            "run this command?",
+            &["run (once) (y)", "skip & tell the agent what to do instead"],
+            "(esc or n)",
+        )
     }
 
     fn input_ready(&self, screen: &str) -> bool {

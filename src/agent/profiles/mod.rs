@@ -16,6 +16,7 @@
 //! | title spinner | no (`✳`/`◐`) | Braille | not seen | not measured | not measured |
 //! | sync frames | VS Code identity only | always | always | once DECRQM 2026 is answered | not at cold launch |
 //! | PTY final replies (optional `turns`) | 2.1.296 on macOS arm64, direct launch with a host-enforced exclusive writer | — | — | — | — |
+//! | [`AgentProfile::question_dialog`] | `AskUserQuestion` and its answer review (2.1.296) | Plan selections and notes (0.154.0) | — | `question` picker (1.18.21) | shell approval (2026.11.13-eacade1 packaged renderer) |
 //! | screen evidence | 2.1.293; live smoke 2.1.295 | 0.154.0 (dialog wording since 0.142.5) | 0.85.1 | 1.18.21 | trust screen: cursor-agent 2026.09.23 |
 //!
 //! OSC 9;4 progress was not seen on any agent (no real turn measured).
@@ -25,11 +26,10 @@
 //! and Pi 1.5.2. The argv construction tests use synthetic choices.
 //! Live permission checks separately cover Codex 0.169.0 config/read and OpenCode
 //! 1.18.25 subagent external-file reads with a local model peer. Cursor support is work
-//! in progress: 2026.11.13 has a `--force` login recording only, and authenticated
-//! startup/composer validation is pending.
+//! in progress. Its 2026.11.13 `--force` launch reached login, and its shell approval
+//! renderer was recorded separately. Authenticated startup/composer validation is pending.
 //! These checks do not extend the screen versions above or certify native Windows.
-//! All built-ins currently return `false` for [`AgentProfile::question_dialog`].
-//! Custom profiles can implement it for question layouts they have recorded.
+//! Pi and custom profiles inherit the default `false` question predicate.
 //!
 //! Profiles read screen text, so a CLI release that rewords a dialog or its composer can
 //! break detection; the controller then logs a `startup markers not recognised` report.

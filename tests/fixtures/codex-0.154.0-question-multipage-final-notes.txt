@@ -1,0 +1,40 @@
+╭───────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)            │
+│                                       │
+│ model:       gpt-5   /model to change │
+│ directory:   ~/survey                 │
+│ permissions: YOLO mode                │
+╰───────────────────────────────────────╯
+
+  Tip: Paste an image with Ctrl+V to attach it to your next message.
+
+• Model changed to gpt-5 medium for Plan mode.
+
+
+› Survey fixture
+
+
+⚠ Model metadata for `gpt-5` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.
+ 
+ 
+  Question 2/2 (1 unanswered)
+  Which shape should the sample use?
+ 
+  › 1. Square             Four sides
+    2. Circle             Round outline
+    3. None of the above  Optionally, add details in notes (tab).
+ 
+  › Add notes
+ 
+  tab or esc to clear notes | enter to submit all
+ 
+
+
+
+
+
+
+
+
+
+

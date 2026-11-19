@@ -1,0 +1,105 @@
+{"t_ms":58,"kind":"query","which":"cpr","answered":true}
+{"t_ms":58,"kind":"query","which":"osc10","answered":false}
+{"t_ms":58,"kind":"query","which":"osc11","answered":false}
+{"t_ms":58,"kind":"query","which":"kitty_keyboard","answered":false}
+{"t_ms":58,"kind":"query","which":"da1","answered":true}
+{"t_ms":58,"kind":"write","value":"\\e[1\\;1R","source":"reply"}
+{"t_ms":58,"kind":"write","value":"\\e[?1\\;2c","source":"reply"}
+{"t_ms":172,"kind":"frame_begin"}
+{"t_ms":175,"kind":"frame_end"}
+{"t_ms":175,"kind":"frame_begin"}
+{"t_ms":175,"kind":"frame_end"}
+{"t_ms":176,"kind":"frame_begin"}
+{"t_ms":176,"kind":"frame_end"}
+{"t_ms":177,"kind":"frame_begin"}
+{"t_ms":177,"kind":"frame_end"}
+{"t_ms":179,"kind":"frame_begin"}
+{"t_ms":179,"kind":"frame_end"}
+{"t_ms":214,"kind":"frame_begin"}
+{"t_ms":214,"kind":"frame_end"}
+{"t_ms":219,"kind":"frame_begin"}
+{"t_ms":219,"kind":"frame_end"}
+{"t_ms":235,"kind":"frame_begin"}
+{"t_ms":235,"kind":"frame_end"}
+{"t_ms":239,"kind":"frame_begin"}
+{"t_ms":239,"kind":"frame_end"}
+{"t_ms":240,"kind":"frame_begin"}
+{"t_ms":240,"kind":"frame_end"}
+{"t_ms":276,"kind":"frame_begin"}
+{"t_ms":276,"kind":"frame_end"}
+{"t_ms":280,"kind":"frame_begin"}
+{"t_ms":280,"kind":"frame_end"}
+{"t_ms":328,"kind":"frame_begin"}
+{"t_ms":328,"kind":"frame_end"}
+{"t_ms":335,"kind":"frame_begin"}
+{"t_ms":335,"kind":"frame_end"}
+{"t_ms":335,"kind":"frame_begin"}
+{"t_ms":335,"kind":"frame_end"}
+{"t_ms":336,"kind":"frame_begin"}
+{"t_ms":336,"kind":"frame_end"}
+{"t_ms":341,"kind":"frame_begin"}
+{"t_ms":342,"kind":"frame_end"}
+{"t_ms":347,"kind":"frame_begin"}
+{"t_ms":347,"kind":"frame_end"}
+{"t_ms":353,"kind":"title","value":"survey"}
+{"t_ms":354,"kind":"frame_begin"}
+{"t_ms":354,"kind":"frame_end"}
+{"t_ms":355,"kind":"frame_begin"}
+{"t_ms":355,"kind":"frame_end"}
+{"t_ms":359,"kind":"frame_begin"}
+{"t_ms":359,"kind":"frame_end"}
+{"t_ms":373,"kind":"frame_begin"}
+{"t_ms":373,"kind":"frame_end"}
+{"t_ms":382,"kind":"frame_begin"}
+{"t_ms":382,"kind":"frame_end"}
+{"t_ms":449,"kind":"frame_begin"}
+{"t_ms":450,"kind":"frame_end"}
+{"t_ms":450,"kind":"frame_begin"}
+{"t_ms":450,"kind":"frame_end"}
+{"t_ms":455,"kind":"frame_begin"}
+{"t_ms":455,"kind":"frame_end"}
+{"t_ms":1301,"kind":"write","value":"\\e[200~/plan\\e[201~","source":"script"}
+{"t_ms":1303,"kind":"frame_begin"}
+{"t_ms":1303,"kind":"frame_end"}
+{"t_ms":1755,"kind":"write","value":"\\r","source":"script"}
+{"t_ms":1757,"kind":"frame_begin"}
+{"t_ms":1758,"kind":"frame_end"}
+{"t_ms":1765,"kind":"frame_begin"}
+{"t_ms":1765,"kind":"frame_end"}
+{"t_ms":2455,"kind":"write","value":"\\e[200~Survey fixture\\e[201~","source":"script"}
+{"t_ms":2456,"kind":"frame_begin"}
+{"t_ms":2456,"kind":"frame_end"}
+{"t_ms":2851,"kind":"write","value":"\\r","source":"script"}
+{"t_ms":2852,"kind":"frame_begin"}
+{"t_ms":2852,"kind":"frame_end"}
+{"t_ms":2862,"kind":"frame_begin"}
+{"t_ms":2862,"kind":"frame_end"}
+{"t_ms":2864,"kind":"frame_begin"}
+{"t_ms":2864,"kind":"frame_end"}
+{"t_ms":2914,"kind":"title","value":"⠴ survey"}
+{"t_ms":2915,"kind":"frame_begin"}
+{"t_ms":2915,"kind":"frame_end"}
+{"t_ms":2936,"kind":"title","value":"⠴ renaming... ⠴ | survey"}
+{"t_ms":2937,"kind":"frame_begin"}
+{"t_ms":2937,"kind":"frame_end"}
+{"t_ms":2951,"kind":"title","value":"[ ! ] Action Required | renaming... ⠦ | survey"}
+{"t_ms":2951,"kind":"frame_begin"}
+{"t_ms":2951,"kind":"frame_end"}
+{"t_ms":2986,"kind":"frame_begin"}
+{"t_ms":2986,"kind":"frame_end"}
+{"t_ms":2989,"kind":"title","value":"[ ! ] Action Required | survey"}
+{"t_ms":2996,"kind":"frame_begin"}
+{"t_ms":2996,"kind":"frame_end"}
+{"t_ms":3905,"kind":"write","value":"\\e[B","source":"script"}
+{"t_ms":3906,"kind":"title","value":"[ . ] Action Required | survey"}
+{"t_ms":3908,"kind":"frame_begin"}
+{"t_ms":3908,"kind":"frame_end"}
+{"t_ms":4305,"kind":"write","value":"\\r","source":"script"}
+{"t_ms":4307,"kind":"frame_begin"}
+{"t_ms":4307,"kind":"frame_end"}
+{"t_ms":4804,"kind":"write","value":"\\t","source":"script"}
+{"t_ms":4806,"kind":"title","value":"[ ! ] Action Required | survey"}
+{"t_ms":4807,"kind":"frame_begin"}
+{"t_ms":4808,"kind":"frame_end"}
+{"t_ms":5806,"kind":"title","value":"[ . ] Action Required | survey"}
+{"t_ms":6554,"kind":"exit","status":1,"signal":"Hangup: 1","killed":true}

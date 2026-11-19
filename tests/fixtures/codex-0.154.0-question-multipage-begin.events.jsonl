@@ -1,0 +1,89 @@
+{"t_ms":19,"kind":"query","which":"cpr","answered":true}
+{"t_ms":19,"kind":"query","which":"osc10","answered":false}
+{"t_ms":19,"kind":"query","which":"osc11","answered":false}
+{"t_ms":19,"kind":"query","which":"kitty_keyboard","answered":false}
+{"t_ms":19,"kind":"query","which":"da1","answered":true}
+{"t_ms":19,"kind":"write","value":"\\e[1\\;1R","source":"reply"}
+{"t_ms":19,"kind":"write","value":"\\e[?1\\;2c","source":"reply"}
+{"t_ms":120,"kind":"frame_begin"}
+{"t_ms":120,"kind":"frame_end"}
+{"t_ms":120,"kind":"frame_begin"}
+{"t_ms":120,"kind":"frame_end"}
+{"t_ms":120,"kind":"frame_begin"}
+{"t_ms":120,"kind":"frame_end"}
+{"t_ms":121,"kind":"frame_begin"}
+{"t_ms":121,"kind":"frame_end"}
+{"t_ms":121,"kind":"frame_begin"}
+{"t_ms":121,"kind":"frame_end"}
+{"t_ms":124,"kind":"frame_begin"}
+{"t_ms":124,"kind":"frame_end"}
+{"t_ms":125,"kind":"frame_begin"}
+{"t_ms":125,"kind":"frame_end"}
+{"t_ms":126,"kind":"frame_begin"}
+{"t_ms":127,"kind":"frame_end"}
+{"t_ms":127,"kind":"frame_begin"}
+{"t_ms":127,"kind":"frame_end"}
+{"t_ms":131,"kind":"frame_begin"}
+{"t_ms":131,"kind":"frame_end"}
+{"t_ms":153,"kind":"frame_begin"}
+{"t_ms":153,"kind":"frame_end"}
+{"t_ms":153,"kind":"frame_begin"}
+{"t_ms":153,"kind":"frame_end"}
+{"t_ms":171,"kind":"frame_begin"}
+{"t_ms":171,"kind":"frame_end"}
+{"t_ms":174,"kind":"frame_begin"}
+{"t_ms":174,"kind":"frame_end"}
+{"t_ms":174,"kind":"frame_begin"}
+{"t_ms":174,"kind":"frame_end"}
+{"t_ms":174,"kind":"frame_begin"}
+{"t_ms":174,"kind":"frame_end"}
+{"t_ms":176,"kind":"frame_begin"}
+{"t_ms":176,"kind":"frame_end"}
+{"t_ms":178,"kind":"frame_begin"}
+{"t_ms":178,"kind":"frame_end"}
+{"t_ms":179,"kind":"title","value":"survey"}
+{"t_ms":180,"kind":"frame_begin"}
+{"t_ms":180,"kind":"frame_end"}
+{"t_ms":184,"kind":"frame_begin"}
+{"t_ms":184,"kind":"frame_end"}
+{"t_ms":194,"kind":"frame_begin"}
+{"t_ms":194,"kind":"frame_end"}
+{"t_ms":224,"kind":"frame_begin"}
+{"t_ms":224,"kind":"frame_end"}
+{"t_ms":227,"kind":"frame_begin"}
+{"t_ms":228,"kind":"frame_end"}
+{"t_ms":1305,"kind":"write","value":"\\e[200~/plan\\e[201~","source":"script"}
+{"t_ms":1307,"kind":"frame_begin"}
+{"t_ms":1307,"kind":"frame_end"}
+{"t_ms":1753,"kind":"write","value":"\\r","source":"script"}
+{"t_ms":1755,"kind":"frame_begin"}
+{"t_ms":1755,"kind":"frame_end"}
+{"t_ms":1764,"kind":"frame_begin"}
+{"t_ms":1765,"kind":"frame_end"}
+{"t_ms":2451,"kind":"write","value":"\\e[200~Survey fixture\\e[201~","source":"script"}
+{"t_ms":2453,"kind":"frame_begin"}
+{"t_ms":2454,"kind":"frame_end"}
+{"t_ms":2852,"kind":"write","value":"\\r","source":"script"}
+{"t_ms":2852,"kind":"frame_begin"}
+{"t_ms":2853,"kind":"frame_end"}
+{"t_ms":2859,"kind":"frame_begin"}
+{"t_ms":2859,"kind":"frame_end"}
+{"t_ms":2874,"kind":"frame_begin"}
+{"t_ms":2875,"kind":"frame_end"}
+{"t_ms":2875,"kind":"frame_begin"}
+{"t_ms":2875,"kind":"frame_end"}
+{"t_ms":2915,"kind":"title","value":"⠧ survey"}
+{"t_ms":2915,"kind":"frame_begin"}
+{"t_ms":2916,"kind":"frame_end"}
+{"t_ms":2923,"kind":"title","value":"⠧ renaming... ⠧ | survey"}
+{"t_ms":2924,"kind":"frame_begin"}
+{"t_ms":2924,"kind":"frame_end"}
+{"t_ms":2934,"kind":"title","value":"[ ! ] Action Required | renaming... ⠧ | survey"}
+{"t_ms":2934,"kind":"frame_begin"}
+{"t_ms":2934,"kind":"frame_end"}
+{"t_ms":2964,"kind":"title","value":"[ ! ] Action Required | survey"}
+{"t_ms":2965,"kind":"frame_begin"}
+{"t_ms":2965,"kind":"frame_end"}
+{"t_ms":3967,"kind":"title","value":"[ . ] Action Required | survey"}
+{"t_ms":4968,"kind":"title","value":"[ ! ] Action Required | survey"}
+{"t_ms":5454,"kind":"exit","status":1,"signal":"Killed: 9","killed":true}

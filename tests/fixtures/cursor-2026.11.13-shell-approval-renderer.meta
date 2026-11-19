@@ -1,0 +1,14 @@
+rows=40
+cols=120
+identity=honest
+agent=cursor
+version=2026.11.13-eacade1
+scene=shell-approval-renderer
+platform=macos-aarch64
+provider=isolated pinned Cursor decision-surface component and packaged Ink renderer
+distribution=https://downloads.cursor.com/lab/2026.11.13-eacade1/darwin/arm64/agent-cli-package.tar.gz
+distribution_sha256=087220ccf1e124dcdf2753601422892042a45a2c577ef0ea25b8a5b0e47bb691
+component=./src/components/prompt/decision-surface.tsx
+component_bundle=2986.index.js
+component_bundle_sha256=deb07a87c5c16c31c0429d41320fa1ea2f6fd29bc14250f461969940b0fb365b
+component_inputs=one Shell decision, command pwd, working directory /sample, sandbox unavailable, no allowlist, Run Everything disabled, selected index 0

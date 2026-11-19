@@ -1,0 +1,9 @@
+rows=40
+cols=120
+identity=honest
+agent=opencode
+version=1.18.21
+scene=question
+platform=macos-aarch64
+provider=isolated loopback model peer and attached TUI
+binary_sha256=8c783005340f8dfc5e7d168478dd0dd2bd1faead531cb34270de2a9689d9f135

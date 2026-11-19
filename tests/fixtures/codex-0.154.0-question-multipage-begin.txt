@@ -1,0 +1,40 @@
+╭───────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)            │
+│                                       │
+│ model:       gpt-5   /model to change │
+│ directory:   ~/survey                 │
+│ permissions: YOLO mode                │
+╰───────────────────────────────────────╯
+
+  Tip: New Build faster with the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+
+• Model changed to gpt-5 medium for Plan mode.
+
+
+› Survey fixture
+
+
+⚠ Model metadata for `gpt-5` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.
+ 
+ 
+  Question 1/2 (2 unanswered)
+  Which color should the sample use?
+ 
+  › 1. Blue               Use a cool shade
+    2. Amber              Use a warm shade
+    3. None of the above  Optionally, add details in notes (tab).
+ 
+  tab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt
+ 
+
+
+
+
+
+
+
+
+
+
+
+

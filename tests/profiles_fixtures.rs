@@ -72,9 +72,18 @@ fn expected(agent: &str, scene: &str) -> ScreenState {
             dialog(DialogKind::BypassWarning, Some(TrustKey::Enter))
         }
         // The open slash menu replaces claude's footer, which holds its ready markers.
-        ("claude", "slash-menu") => ScreenState::Unknown,
+        (
+            "claude",
+            "slash-menu"
+            | "question-single"
+            | "question-multi"
+            | "question-multiselect"
+            | "question-multipage-review"
+            | "long-reply-select-hint",
+        ) => ScreenState::Unknown,
+        ("opencode", "question") => ScreenState::Unknown,
         // Captured with --force, signed out. Login is not composer evidence.
-        ("cursor", "force-login") => ScreenState::Unknown,
+        ("cursor", "force-login" | "shell-approval-renderer") => ScreenState::Unknown,
         _ => ScreenState::InputReady,
     }
 }
@@ -107,6 +116,58 @@ fn every_final_screen_classifies_as_recorded() {
         ("cursor", "trust"),
     ] {
         fixtures::find(agent, scene);
+    }
+}
+
+#[test]
+fn stock_profiles_recognize_only_the_recorded_active_questions() {
+    let questions = [
+        ("claude", "question-single"),
+        ("claude", "question-multi"),
+        ("claude", "question-multiselect"),
+        ("claude", "question-multipage-review"),
+        ("codex", "question-plan"),
+        ("codex", "question-multipage-begin"),
+        ("codex", "question-multipage-review"),
+        ("codex", "question-multipage-final-notes"),
+        ("codex", "question-notes-empty"),
+        ("opencode", "question"),
+        ("cursor", "shell-approval-renderer"),
+    ];
+    for (agent, scene) in questions {
+        fixtures::find(agent, scene);
+    }
+    for scene in ["prose-dialog-footer", "long-reply-select-hint"] {
+        let quoted = fixtures::find("claude", scene).screen();
+        assert!(quoted.contains("4. Chat about this"), "{scene}");
+        assert!(
+            quoted.contains("Enter to select · ↑/↓ to navigate · Esc to cancel"),
+            "{scene}"
+        );
+    }
+    for f in fixtures::all() {
+        let active = questions.contains(&(f.meta.agent.as_str(), f.meta.scene.as_str()));
+        let current = profile(&f.meta.agent);
+        let screen = f.screen();
+        assert_eq!(current.question_dialog(&screen), active, "{}", f.label());
+        if active {
+            assert!(current.dialog(&screen).is_none(), "{}", f.label());
+            for redraw in ["❯", "> pending draft"] {
+                assert!(
+                    !current.question_dialog(&format!("{screen}\n{redraw}")),
+                    "{}",
+                    f.label()
+                );
+            }
+            for other in builtin().iter().filter(|p| p.id() != current.id()) {
+                assert!(
+                    !other.question_dialog(&screen),
+                    "{} matched {}",
+                    other.id(),
+                    f.label()
+                );
+            }
+        }
     }
 }
 

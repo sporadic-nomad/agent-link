@@ -628,6 +628,42 @@ fn an_open_question_blocks_paste_and_submit_without_changing_readiness() {
     screen_contains(term.terminal(), "you: after the answer", WAIT);
 }
 
+#[test]
+fn codex_plan_question_blocks_delivery_with_its_ready_header_visible() {
+    let f = common::fixtures::find("codex", "question-plan");
+    let dir = tempfile::tempdir().unwrap();
+    let screen = dir.path().join("screen");
+    std::fs::write(&screen, f.screen().trim_end().replace('\n', "\r\n")).unwrap();
+    // Print the captured viewport in raw mode. The first byte received acknowledges
+    // all earlier writes and lets the test inspect it after the ticket resolves.
+    let peer = r#"stty raw -echo || exit 2
+cat screen || exit 3
+dd bs=1 count=1 of=received 2>/dev/null || exit 4
+printf '\033]0;question-byte-received\007'
+cat >/dev/null"#;
+    let mut spec = agent_link::SpawnSpec::direct("/bin/sh", ["-c", peer], dir.path(), f.size());
+    spec.env = common::test_env(dir.path());
+    let profile = agent_link::agent::ProfileRegistry::builtin()
+        .get("codex")
+        .unwrap();
+    let (term, events) = common::agent::spawn_agent(spec, AgentSpec::new(profile));
+    states_until(&term, &events, WAIT, |st, blocking| {
+        st == AgentState::Ready && !blocking
+    });
+    for opts in [SendOptions::default(), submit()] {
+        let ticket = term.send("would select an answer", opts);
+        assert_eq!(
+            outcome(&term, &events, &ticket),
+            Aborted(AbortReason::DialogBlocking)
+        );
+    }
+    term.terminal().write(b"!").unwrap();
+    wait_screen(term.terminal(), WAIT, |s| {
+        s.title == "question-byte-received"
+    });
+    assert_eq!(std::fs::read(dir.path().join("received")).unwrap(), b"!");
+}
+
 mod question_redraws {
     use super::*;
     use agent_link::agent::{

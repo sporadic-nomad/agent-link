@@ -1,0 +1,40 @@
+                                                                                                                        
+  ┃                                                                                                                     
+  ┃  Survey fixture                                                                                                     
+  ┃                                                                                                                     
+                                                                                                                        
+     → Asked 1 question                                                                                                 
+                                                                                                                        
+     ▣  Build · fixture                                                                                                 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ┃                                                                                                                     
+  ┃  Which color should the sample use?                                                                                 
+  ┃                                                                                                                     
+  ┃  1. Blue                                                                                                            
+  ┃     Use a cool shade                                                                                                
+  ┃  2. Amber                                                                                                           
+  ┃     Use a warm shade                                                                                                
+  ┃  3. Type your own answer                                                                                            
+  ┃                                                                                                                     
+  ┃  ↑↓ select  enter submit  esc dismiss                                                                               
+  ┃                                                                                                                     
+                                                                                                                        

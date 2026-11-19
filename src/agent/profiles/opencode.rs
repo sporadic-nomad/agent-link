@@ -8,6 +8,7 @@
 //! |---|---|
 //! | `launchers()` | `opencode` |
 //! | `launch()` | `opencode`; unattended: env default [`OPENCODE_PERMISSION_ENV`]`=`[`OPENCODE_PERMISSION_DEFAULT`]; no pre-trust (no trust dialog) |
+//! | `question_dialog()` | numbered `question` picker with custom answer and keyboard footer (1.18.21) |
 //! | `reset_command()` | `/new` |
 //! | `login_check()` | none (`opencode auth list` is a listing, not a check) |
 //! | `rpc_launch()` | `opencode` + [`OPENCODE_RPC_FLAGS`] + the unattended env default (no resume flag); explicit policy through `rpc_launch_with_options()` |
@@ -15,7 +16,7 @@
 
 use std::path::Path;
 
-use crate::agent::detect::has_any;
+use crate::agent::detect::{dialog_at_bottom, has_any};
 use crate::agent::{
     AgentProfile, Dialog, LaunchPlan, Permissions, RpcLaunch, RpcLaunchOptions, ShellKind,
     SignalHints, TrustPolicy, Unlock,
@@ -91,6 +92,13 @@ impl AgentProfile for OpencodeProfile {
             login_check: Support::Unsupported,
             evidence: &[
                 Evidence {
+                    operation: "question dialog recognition",
+                    kind: EvidenceKind::CapturedTerminal,
+                    cli_version: Some("1.18.21"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/opencode-1.18.21-question.bin",
+                },
+                Evidence {
                     operation: "ready screen recognition",
                     kind: EvidenceKind::SyntheticFixture,
                     cli_version: Some("1.18.21"),
@@ -114,6 +122,22 @@ impl AgentProfile for OpencodeProfile {
 
     fn dialog(&self, _text: &str) -> Option<Dialog> {
         None
+    }
+
+    fn question_dialog(&self, screen: &str) -> bool {
+        // The final blank panel row still draws its left border below the controls.
+        let screen = screen.trim_end();
+        let panel = screen
+            .rsplit_once('\n')
+            .filter(|(_, last)| last.trim() == "┃")
+            .map_or(screen, |(body, _)| body);
+        dialog_at_bottom(
+            panel,
+            24,
+            ". type your own answer",
+            &["↑↓ select", "enter submit"],
+            "esc dismiss",
+        )
     }
 
     fn input_ready(&self, screen: &str) -> bool {

@@ -5,6 +5,7 @@
 //! |---|---|
 //! | `launchers()` | `claude` |
 //! | `launch()` | `claude`; unattended: `--permission-mode bypassPermissions` only when the profile accepts the bypass warning ([`BYPASS_WARNING_VERIFIED`] for the built-in); no pre-trust flag |
+//! | `question_dialog()` | `AskUserQuestion` choices, tabs and answer review (2.1.296) |
 //! | `reset_command()` | `/clear` |
 //! | `login_check()` | `claude auth status`; signed out: `"loggedIn": false` on stdout |
 //! | `rpc_launch()` | `claude` + [`CLAUDE_RPC_FLAGS`] + unattended permission flags, `--continue` to resume; explicit policy through `rpc_launch_with_options()` |
@@ -16,7 +17,9 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use crate::KnownTerminal;
-use crate::agent::detect::{from_last, has_all, has_any, pending_input_where, steer_two};
+use crate::agent::detect::{
+    dialog_at_bottom, from_last, has_all, has_any, pending_input_where, steer_two,
+};
 use crate::agent::{
     AgentProfile, Dialog, DialogKind, LaunchPlan, LoginCheck, ModelChoice, Permissions, RpcLaunch,
     RpcLaunchOptions, ShellKind, SignalHints, TrustPolicy, Unlock,
@@ -229,6 +232,13 @@ impl AgentProfile for ClaudeProfile {
             login_check: Support::Supported,
             evidence: &[
                 Evidence {
+                    operation: "question dialog recognition",
+                    kind: EvidenceKind::CapturedTerminal,
+                    cli_version: Some("2.1.296"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/claude-2.1.296-question-single.bin",
+                },
+                Evidence {
                     operation: "ready screen recognition",
                     kind: EvidenceKind::CapturedTerminal,
                     cli_version: Some("2.1.293"),
@@ -258,6 +268,22 @@ impl AgentProfile for ClaudeProfile {
             return None;
         }
         self.dialog_in(&text)
+    }
+
+    fn question_dialog(&self, screen: &str) -> bool {
+        dialog_at_bottom(
+            screen,
+            24,
+            ". chat about this",
+            &["enter to select ·", "to navigate ·"],
+            "esc to cancel",
+        ) || dialog_at_bottom(
+            screen,
+            24,
+            "review your answers",
+            &["ready to submit your answers?", "1. submit answers"],
+            "2. cancel",
+        )
     }
 
     fn input_ready(&self, screen: &str) -> bool {

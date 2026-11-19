@@ -450,11 +450,11 @@ result??;
 
 | Agent | Recorded profile versions | Startup handled |
 | --- | --- | --- |
-| claude | 2.1.293; live smoke 2.1.295 | folder-trust dialog, bypass-permissions warning |
+| claude | 2.1.293 and 2.1.296, live smoke 2.1.295 | folder-trust dialog, bypass-permissions warning |
 | codex | 0.154.0 (dialog wording since 0.142.5) | pre-trust flag; trust, full-access and update prompts |
 | pi | 0.85.1 | pre-trust flag; project-trust dialog |
 | opencode | 1.18.21 | no startup dialog |
-| cursor (**WIP**) | 2026.09.23 (trust); 2026.11.13 (`--force`, login only) | pre-trust flag (saves a trust record); workspace-trust dialog; authenticated startup/composer unverified |
+| cursor (**WIP**) | 2026.09.23 (trust); 2026.11.13 (`--force` login and isolated approval renderer) | pre-trust flag (saves a trust record); workspace-trust dialog; authenticated startup/composer unverified |
 
 These versions describe the supplied screen evidence. Separate
 [recorded permission checks](docs/permission-validation.md) cover Codex `0.169.0`
@@ -472,9 +472,11 @@ then logs a `startup markers not recognised` report. Replace a built-in with
 `ProfileRegistry::register`, or write your own `AgentProfile` with the helpers in
 `agent::detect`.
 
-Question recognition currently requires a custom `AgentProfile::question_dialog`
-predicate. The built-in profiles use the default `false` until versioned recordings
-of active questions are available.
+The built-in delivery guard recognizes Claude `AskUserQuestion`, Codex Plan mode,
+OpenCode's question picker and Cursor's shell approval menu on their recorded layouts.
+If one has the keyboard, a normal send ends with `Aborted(DialogBlocking)`. Pi and
+custom profiles inherit `false` unless they implement `AgentProfile::question_dialog`.
+[Recorded layouts and capture scope](docs/agents-and-delivery.md#questions-that-take-keyboard-input)
 
 Compatibility declarations are available through `AgentProfile::compatibility()`;
 they distinguish supported, unsupported and unknown operations and identify their
