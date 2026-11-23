@@ -349,7 +349,7 @@ fn profiles_refuse_efforts_outside_their_vocabulary_and_typed_toml_values() {
 #[test]
 fn deferred_and_custom_profiles_refuse_an_explicit_choice() {
     let custom: Arc<dyn AgentProfile> = Arc::new(Scripted);
-    for profile in [profile("opencode"), profile("cursor"), custom] {
+    for profile in [profile("cursor"), custom] {
         for choice in [
             ModelChoice::new("id"),
             ModelChoice::new("id").with_effort("high"),
@@ -359,6 +359,87 @@ fn deferred_and_custom_profiles_refuse_an_explicit_choice() {
                 matches!(error, Error::Unsupported(_)),
                 "{} {error}",
                 profile.id()
+            );
+        }
+    }
+}
+
+#[test]
+fn opencode_takes_a_model_after_every_posture_and_keeps_its_permission_env() {
+    const MODEL: &str = "provider/model:tag [1m]";
+    check_model_launch("opencode", &ModelChoice::new(MODEL), &["-m", MODEL]);
+
+    let choice = ModelChoice::new(r"provider\model's [1m]");
+    for (shell, expected) in [
+        (ShellKind::Posix, r"opencode -m 'provider\model'\''s [1m]'"),
+        (ShellKind::Fish, r"opencode -m 'provider\\model\'s [1m]'"),
+        (ShellKind::Cmd, r#"opencode -m "provider\model's [1m]""#),
+    ] {
+        let mut p = plan("opencode", &Permissions::Unattended, PreTrust::Off, shell);
+        p.args
+            .extend(profile("opencode").model_args(&choice, &p.args).unwrap());
+        assert_eq!(p.command_line(shell).unwrap(), expected, "{shell:?}");
+    }
+
+    // The selection adds only words. The unattended env default, an explicit custom
+    // value and the native posture's absence of one all reach the launch unchanged.
+    let (key, default) = (
+        opencode::OPENCODE_PERMISSION_ENV,
+        opencode::OPENCODE_PERMISSION_DEFAULT,
+    );
+    let workaround = Permissions::Custom {
+        args: Vec::new(),
+        env: vec![kv(key, opencode::OPENCODE_EXTERNAL_DIRECTORY_WORKAROUND)],
+    };
+    let selected = ModelChoice::new("selected");
+    for (perms, expected, env, env_defaults) in [
+        (
+            Permissions::Unattended,
+            "opencode -m selected",
+            vec![],
+            vec![kv(key, default)],
+        ),
+        (
+            Permissions::AgentDefault,
+            "opencode -m selected",
+            vec![],
+            vec![],
+        ),
+        (
+            custom(),
+            "opencode --mine -m selected",
+            vec![kv("MINE", "1")],
+            vec![],
+        ),
+        (
+            workaround,
+            "opencode -m selected",
+            vec![kv(key, r#"{"external_directory":"allow"}"#)],
+            vec![],
+        ),
+    ] {
+        let mut p = plan("opencode", &perms, PreTrust::FlagsOnly, ShellKind::Posix);
+        p.args
+            .extend(profile("opencode").model_args(&selected, &p.args).unwrap());
+        assert_eq!(p.command_line(ShellKind::Posix).unwrap(), expected);
+        assert_eq!((p.env, p.env_defaults), (env, env_defaults), "{perms:?}");
+    }
+}
+
+#[test]
+fn opencode_refuses_an_effort_instead_of_launching_without_it() {
+    for perms in [Permissions::Unattended, Permissions::AgentDefault, custom()] {
+        let base = plan("opencode", &perms, PreTrust::Off, ShellKind::Posix).args;
+        for level in ["low", "medium", "high", "max", "default"] {
+            let choice = ModelChoice::new("selected").with_effort(level);
+            let error = profile("opencode").model_args(&choice, &base).unwrap_err();
+            assert!(
+                matches!(error, Error::Unsupported(_)),
+                "{perms:?} {level}: {error}"
+            );
+            assert!(
+                error.to_string().contains("reasoning effort for opencode"),
+                "{error}"
             );
         }
     }
@@ -393,6 +474,11 @@ fn profiles_refuse_conflicts_and_missing_operands_before_the_model_options() {
         ("codex", &both, &["-c=model_reasoning_effort=low"]),
         ("codex", &both, &["--config", "model_reasoning_effort=low"]),
         ("codex", &model, &["--config"]),
+        ("opencode", &model, &["-m", "old"]),
+        ("opencode", &model, &["-mold"]),
+        ("opencode", &model, &["-m=old"]),
+        ("opencode", &model, &["--model", "old"]),
+        ("opencode", &model, &["--model=old"]),
     ] {
         let error = mapped_args(id, choice, base).unwrap_err();
         assert!(
@@ -434,6 +520,7 @@ fn model_without_separate_effort_allows_base_effort_flags_and_option_names_as_da
             &["-c", "model_reasoning_effort=low", "model=old"],
         ),
         ("codex", "-m", &["--config=other=model=old"]),
+        ("opencode", "-m", &["--mine", "--models"]),
     ] {
         assert_eq!(
             mapped_args(id, &model, base).unwrap(),

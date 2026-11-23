@@ -594,6 +594,45 @@ fn silent_never_draws_a_composer_but_still_answers() {
     assert_eq!(fake.profile.pending_input(&screen.text(), "hi"), None);
 }
 
+/// `--unreadable-composer`: the composer has no prompt marker, so the default rule reads
+/// `None` with the text on screen and after the submit alike.
+#[test]
+fn an_unreadable_composer_hides_its_text_from_the_default_rule() {
+    let fake = Fake::launch("composer", &["--unreadable-composer"]);
+    let screen = fake.ready();
+    assert_eq!(
+        content(&screen),
+        ["fake-agent v1 (composer)", "┃", FOOTER],
+        "{}",
+        bottom_rows(&screen)
+    );
+    fake.term.write(b"\x1b[200~hello there\x1b[201~").unwrap();
+    let screen = fake.contains("┃ hello there");
+    assert_eq!(
+        fake.profile.pending_input(&screen.text(), "hello there"),
+        None
+    );
+    fake.term.write(b"\r").unwrap();
+    let screen = fake.contains("agent: ok #1");
+    assert!(content(&screen).contains(&"you: hello there"));
+    assert_eq!(
+        fake.profile.pending_input(&screen.text(), "hello there"),
+        None
+    );
+}
+
+/// `--silent-paste`: the paste changes the composer but draws nothing — its text shows
+/// first with the next key's redraw.
+#[test]
+fn a_silent_paste_draws_nothing() {
+    let (term, events, _home) = direct(&["composer", "--silent-paste"]);
+    common::output_until(&events, "esc to interrupt");
+    term.write(b"\x1b[200~hello there\x1b[201~").unwrap();
+    term.write(b"!").unwrap();
+    let output = common::output_until(&events, "hello there!");
+    assert_eq!(output.matches("hello there").count(), 1, "{output:?}");
+}
+
 #[test]
 fn a_bad_scene_or_flag_exits_2_with_usage() {
     let scenes = format!("scenes: {}", FAKE_SCENES.join(", "));

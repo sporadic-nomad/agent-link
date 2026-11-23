@@ -1,6 +1,6 @@
 [package]
 name = "agent-link"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 # Minimum supported Rust version; checked separately in CI.
 rust-version = "1.85"
@@ -34,8 +34,9 @@ test-support = []
 screen = ["dep:vt100", "dep:regex"]
 # Agent profiles and the delivery controller; detection reads the screen model.
 agent = ["screen"]
-# Controlled PTY transcript observations with explicit host-enforced writer isolation.
-turns = ["agent", "dep:close_fds", "dep:rustix", "dep:serde", "dep:serde_json", "dep:sha2"]
+# Controlled PTY transcript observations with explicit host-enforced writer isolation, and
+# best-effort ambient observation (the OpenCode feed reads its TUI's loopback server).
+turns = ["agent", "dep:base64", "dep:close_fds", "dep:getrandom", "dep:httparse", "dep:rustix", "dep:serde", "dep:serde_json", "dep:sha2"]
 # Interactive PTY question events and host-confirmed answers.
 questions = ["turns", "dep:base64", "dep:httparse", "dep:percent-encoding"]
 # Per-run attachment of consumer-owned CLI tools and MCP connections.
@@ -73,9 +74,12 @@ thiserror = "2"
 # Native protocol data only; no vendor SDK or async runtime.
 serde_json = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-# Authenticated persistent HTTP/1.1 question connections to a host-bound OpenCode peer.
+# Authenticated loopback HTTP/1.1 exchanges with an OpenCode server (`turns`: the ambient
+# feed; `questions`: host-bound question connections).
 base64 = { version = "0.22", optional = true }
 httparse = { version = "1.10", optional = true }
+# `turns`: OS randomness for the per-launch OpenCode server password; MSRV 1.85.
+getrandom = { version = "0.4", optional = true }
 percent-encoding = { version = "2.3", optional = true }
 # Private, automatically removed per-run tool configuration files; MSRV 1.63.
 tempfile = { version = "3.10", optional = true }
@@ -102,10 +106,13 @@ sha2 = { version = "0.10.9", optional = true }
 close_fds = { version = "0.3.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-# Job Object tree kill (`Win32_Security`: CreateJobObjectW), Toolhelp snapshots (foreground), console raw mode.
+# Job Object tree kill (`Win32_Security`: CreateJobObjectW), Toolhelp snapshots (foreground), console raw mode,
+# and the owning process of a loopback TCP connection (`Win32_NetworkManagement_IpHelper`, ambient feed).
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
     "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",
@@ -166,6 +173,22 @@ required-features = ["questions"]
 
 [[test]]
 name = "pty_questions"
+required-features = ["questions", "test-support"]
+
+[[test]]
+name = "ambient_turns"
+required-features = ["turns", "test-support"]
+
+[[test]]
+name = "ambient_sources"
+required-features = ["turns", "test-support"]
+
+[[test]]
+name = "ambient_feed"
+required-features = ["turns", "test-support"]
+
+[[test]]
+name = "ambient_questions"
 required-features = ["questions", "test-support"]
 
 [[test]]

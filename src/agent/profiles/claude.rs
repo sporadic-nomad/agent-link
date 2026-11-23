@@ -216,6 +216,15 @@ impl AgentProfile for ClaudeProfile {
     fn mcp_backend(&self, _: crate::tools::ToolTransport) -> Option<crate::tools::McpBackend> {
         Some(crate::tools::McpBackend::Claude)
     }
+    /// The session the agent's `sessions/<pid>.json` names under `CLAUDE_CONFIG_DIR` (else
+    /// `~/.claude`); turns end explicitly with `turn_duration` or an interruption. Best
+    /// effort, see [`turns::ambient`](crate::agent::turns::ambient).
+    #[cfg(feature = "turns")]
+    fn ambient_turns(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::agent::turns::ambient::AmbientSource>> {
+        Some(std::sync::Arc::new(super::ambient::claude::ClaudeAmbient))
+    }
     fn compatibility(&self) -> crate::agent::compatibility::Compatibility {
         use crate::agent::compatibility::{Compatibility, Evidence, EvidenceKind, Support};
         const WRITER_CAPTURE: Evidence = Evidence {
@@ -270,6 +279,29 @@ impl AgentProfile for ClaudeProfile {
                     operation: "direct PTY final reply parsing",
                     ..WRITER_CAPTURE
                 },
+                #[cfg(feature = "turns")]
+                Evidence {
+                    cli_version: Some("2.1.296"),
+                    source: "tests/fixtures/transcripts/ambient/claude-2.1.296/README.md",
+                    ..super::AMBIENT_PARSING
+                },
+                #[cfg(feature = "turns")]
+                Evidence {
+                    cli_version: Some("2.1.296"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/transcripts/claude-2.1.296/capture.json",
+                    ..super::AMBIENT_PARSING
+                },
+                #[cfg(feature = "turns")]
+                super::AMBIENT_LOOKUP,
+                #[cfg(feature = "questions")]
+                Evidence {
+                    cli_version: Some("2.1.296"),
+                    source: "tests/fixtures/transcripts/ambient/claude-2.1.296/README.md",
+                    ..super::AMBIENT_QUESTION_RECORDS
+                },
+                #[cfg(feature = "questions")]
+                super::AMBIENT_QUESTION_RELAY,
             ],
         }
     }

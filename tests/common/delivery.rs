@@ -3,11 +3,13 @@
 //! from the ticket and its `Event::Delivery` together, the output seen meanwhile, and the
 //! shell checks they share.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use agent_link::Event;
 use agent_link::agent::{
-    AgentSpec, AgentState, AgentTerminal, DeliveryOutcome, SendOptions, Ticket, Timing, TrustPolicy,
+    AgentSpec, AgentState, AgentTerminal, DeliveryOutcome, SendOptions, Ticket, Timing,
+    TrustPolicy, UnreadableComposer,
 };
 use agent_link::screen::ScreenSnapshot;
 use crossbeam_channel::Receiver;
@@ -91,6 +93,44 @@ pub fn submit() -> SendOptions {
         submit: true,
         ..SendOptions::default()
     }
+}
+
+/// A submit that accepts one unverified Enter for an unreadable composer.
+pub fn enter_once() -> SendOptions {
+    SendOptions {
+        unreadable_composer: UnreadableComposer::EnterOnce,
+        ..submit()
+    }
+}
+
+/// The fake with `scene`, `flags` and `timing`, drawing its composer without a prompt
+/// marker (`--unreadable-composer`: the default pending-input rule reads `None`, as for
+/// opencode) and logging its raw input to `input.bin` in the returned home.
+pub fn unreadable_fake(
+    scene: &str,
+    flags: &[&str],
+    timing: Timing,
+) -> (AgentTerminal, Receiver<Event>, TempDir) {
+    let mut all = vec!["--unreadable-composer", "--input-log", "input.bin"];
+    all.extend_from_slice(flags);
+    shell(AgentSpec {
+        timing,
+        trust: TrustPolicy::unattended(),
+        ..AgentSpec::new(fake_profile(scene, &all))
+    })
+}
+
+/// The fake's raw input log (`--input-log input.bin` in `home`), read once the fake drew
+/// a final `~` typed into its composer (either composer marker): every byte a finished
+/// delivery wrote came before it.
+pub fn drained_input_log(term: &AgentTerminal, home: &Path) -> Vec<u8> {
+    term.terminal().write(b"~").unwrap();
+    wait_screen(term.terminal(), WAIT, |s| {
+        s.rows
+            .iter()
+            .any(|r| (r.starts_with('>') || r.starts_with('┃')) && r.ends_with('~'))
+    });
+    std::fs::read(home.join("input.bin")).unwrap()
 }
 
 /// Drains `events` until the `Delivery` of `ticket` and returns its outcome, after

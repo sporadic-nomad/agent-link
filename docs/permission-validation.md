@@ -117,4 +117,5 @@ successful run if profile markers need updating.
 
 Even a passing startup/paste check would not establish verified submission. Cursor's
 composer remains unmeasured for the library's delivery proof, so unreadable input
-still yields `SubmitUnverified`.
+still yields `SubmitUnverified`. With the opt-in `UnreadableComposer::EnterOnce` it
+yields `UnverifiedEnter`, which is not verified submission either.

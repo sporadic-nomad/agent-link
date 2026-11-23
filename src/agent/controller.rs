@@ -19,7 +19,10 @@
 //!    left on screen never makes the new one ready — read while the shell was still in
 //!    front, it once sent the message to the shell's line (cleared by the launch line that
 //!    followed) and closed the new agent's trust window. The dialog and lull checks below
-//!    read the same rows.
+//!    read the same rows. An explicit reset under the opt-in **turn gate**
+//!    (`Timing::reset_turn_wait`, `turn_gate`) then also waits, bounded, while the agent's
+//!    activity is `Working`, and starts over; the commit point sends it back there when
+//!    a turn began meanwhile.
 //! 2. **Agent or shell** (every send): the foreground owner, asked now ([`job_owner`]).
 //!    The startup gate's "running" is a launch heuristic that stays true after the agent
 //!    exits back to the shell — exactly when a paste would land on the shell's line (a
@@ -61,8 +64,12 @@
 //! 6. **Submit** (`verify`): wait until the paste landed (`settle::paste_landed`) and
 //!    was recognised in the composer, write Enter separately and require fresh output
 //!    showing a stable readable composer without the text. Retries require explicit
-//!    opt-in and a composer still holding the text; a late redraw can cause duplicates. The foreground is read again right before every
-//!    Enter: the agent may have left after the paste without reading it (the shell in
+//!    opt-in and a composer still holding the text; a late redraw can cause duplicates.
+//!    A composer the profile cannot read at all gets no Enter, unless the send opted into
+//!    `UnreadableComposer::EnterOnce`: then one unverified Enter once the paste's output
+//!    went quiet, ending `UnverifiedEnter` (`verify`). The foreground is read again
+//!    right before every Enter: the agent may have left after the paste without reading
+//!    it (the shell in
 //!    front ⇒ its line interrupted, `ShellOnly`; another program ⇒ `ForegroundUnproven`,
 //!    no Enter; strict: the proof on that read, and once more after the verified submit).
 //!    A multi-line
@@ -74,7 +81,7 @@
 //! the fence of its first Enter, a lull that needs fresh output after it (a slow reset is
 //! silent at first, and the stale screen still shows a ready composer), then the message
 //! (submit, `Fail`, the caller's strict flag and revalidation) — nothing else can run in
-//! between.
+//! between. The caller's `unreadable_composer` choice applies to both halves.
 //!
 //! Every wait checks for cancellation first: the terminal dropped (`Disposed`), the
 //! session ended or the monitor stopped after a panic (`NotConnected`). A host receiver
@@ -91,10 +98,11 @@ use super::delivery::Resolver;
 use super::leftover::Leftover;
 use super::settle::{self, Fence, LullParams, OutputView, Settle, interrupt_due};
 use super::state::{AgentProgram, Controller, CtlState, FrontRead, Interrupt};
+use super::turn_gate::TurnWait;
 use super::verify::ResetBaseline;
 use super::{
     AbortReason, AgentProfile, DeliveryOutcome, Dialog, ForegroundPolicy, Revalidate, ScreenState,
-    SendOptions, ShellFallback, TicketId,
+    SendOptions, ShellFallback, TicketId, UnreadableComposer,
 };
 use crate::error::{Error, Result};
 use crate::pty::ProgramId;
@@ -103,8 +111,8 @@ use crate::{Foreground, ForegroundOwner};
 
 /// How often a delivery waiting for readiness reads the foreground while the agent could
 /// have left unseen (`CtlState::could_have_left`; on Windows each read is a process
-/// snapshot).
-const LEFT_POLL: Duration = Duration::from_millis(250);
+/// snapshot), and how often the turn gate reads it while the agent works.
+pub(super) const LEFT_POLL: Duration = Duration::from_millis(250);
 
 /// `[agent-link:<id>] delivery #<ticket>: …` at `info` when tracing is on (formatted only
 /// then). Never logs the message text.
@@ -126,8 +134,17 @@ pub(crate) use trace;
 /// its follow-up needs at the commit point, including after host revalidation.
 pub(super) enum MessageIntent {
     Send,
-    Reset,
+    Reset(TurnWait),
     SubmittedReset(ResetBaseline),
+}
+
+impl MessageIntent {
+    fn turn_wait(&mut self) -> Option<&mut TurnWait> {
+        match self {
+            Self::Reset(wait) => Some(wait),
+            _ => None,
+        }
+    }
 }
 
 /// One message to deliver.
@@ -161,15 +178,21 @@ impl MessageJob {
         }
     }
 
-    pub(super) fn reset(ticket: TicketId, command: &str, on_shell: ShellFallback) -> Self {
+    pub(super) fn reset(
+        ticket: TicketId,
+        command: &str,
+        on_shell: ShellFallback,
+        unreadable_composer: UnreadableComposer,
+    ) -> Self {
         Self {
-            intent: MessageIntent::Reset,
+            intent: MessageIntent::Reset(TurnWait::default()),
             ..Self::new(
                 ticket,
                 command,
                 SendOptions {
                     submit: true,
                     on_shell,
+                    unreadable_composer,
                     ..SendOptions::default()
                 },
             )
@@ -357,6 +380,13 @@ pub(crate) struct Runner {
     pub(super) profile_failed: bool,
 }
 
+/// The agent lifecycle and output count before queueing a paste.
+#[derive(Clone, Copy)]
+pub(super) struct PasteFence {
+    pub(super) lifecycle: u64,
+    pub(super) serial: u64,
+}
+
 /// Owned rows and the controller/render revisions they were read against.
 pub(super) struct Observation {
     pub(super) screen: ScreenSnapshot,
@@ -371,6 +401,8 @@ pub(super) struct Observation {
 pub(crate) struct ProfileRead<T> {
     pub(crate) value: Option<T>,
     pub(crate) view: OutputView,
+    /// The launch at the same validation boundary as the composer reading.
+    pub(super) lifecycle: u64,
     pub(crate) unseen: bool,
 }
 
@@ -470,6 +502,12 @@ impl Runner {
     /// the reset's first Enter settled (see the module docs). The reset not delivered ⇒ its
     /// outcome, nothing more typed. The follow-up keeps the original Enter fence through
     /// host revalidation and the last screen and foreground checks before its paste.
+    ///
+    /// Under the opt-in `UnreadableComposer::EnterOnce` a reset that wrote its unverified
+    /// Enter (`UnverifiedEnter`) permits the follow-up only once fresh output after that
+    /// Enter settled (`verify`'s unverified reset keeps its baseline then); otherwise the
+    /// follow-up is withheld (`SubmitUnverified`). Such a compound job never ends
+    /// `Delivered`: the follow-up's own receipt cannot vouch for the reset.
     pub(crate) fn process_reset_and_send(
         &mut self,
         reset: &mut MessageJob,
@@ -477,19 +515,32 @@ impl Runner {
     ) -> Step<DeliveryOutcome> {
         let ticket = message.ticket;
         self.trace_start(reset, "reset first");
-        let outcome = self.process_message(reset, None)?;
-        if outcome != DeliveryOutcome::Delivered {
+        let unverified = match self.process_message(reset, None) {
+            Ok(DeliveryOutcome::Delivered) => false,
+            Err(AbortReason::UnverifiedEnter) => true,
+            Ok(outcome) => {
+                trace!(
+                    self,
+                    ticket, "the reset was not delivered: the message is not sent"
+                );
+                return Ok(outcome);
+            }
+            Err(reason) => return Err(reason),
+        };
+        let MessageIntent::SubmittedReset(baseline) = &reset.intent else {
             trace!(
                 self,
-                ticket, "the reset was not delivered: the message is not sent"
+                ticket,
+                "no fresh output settled after the unverified reset: the message is not sent"
             );
-            return Ok(outcome);
-        }
-        let MessageIntent::SubmittedReset(baseline) = &reset.intent else {
             return Err(AbortReason::SubmitUnverified);
         };
         self.trace_start(message, "then the message");
-        self.process_message(message, Some(baseline))
+        let outcome = self.process_message(message, Some(baseline));
+        if unverified && outcome == Ok(DeliveryOutcome::Delivered) {
+            return Err(AbortReason::UnverifiedEnter);
+        }
+        outcome
     }
 
     /// Port of `processMessageJob` (the steps are in the module docs).
@@ -497,6 +548,16 @@ impl Runner {
         &mut self,
         job: &mut MessageJob,
         after_reset: Option<&ResetBaseline>,
+    ) -> Step<DeliveryOutcome> {
+        self.process_message_with(job, after_reset, |_| {})
+    }
+
+    /// Tests can order a state change after the final validation, before the writer lock.
+    pub(super) fn process_message_with(
+        &mut self,
+        job: &mut MessageJob,
+        after_reset: Option<&ResetBaseline>,
+        mut before_write: impl FnMut(&Self),
     ) -> Step<DeliveryOutcome> {
         let ticket = job.ticket;
         self.cancelled()?;
@@ -510,10 +571,17 @@ impl Runner {
         loop {
             // 1. Ready gate.
             trace!(self, ticket, "waiting for the agent");
-            if self.wait_agent_ready(ticket)? {
+            let (ready, lifecycle) = self.wait_agent_ready(ticket)?;
+            if after_reset.is_some_and(|reset| reset.lifecycle != lifecycle) {
+                return Err(AbortReason::SubmitUnverified);
+            }
+            if ready {
                 trace!(self, ticket, "agent ready");
             } else {
                 trace!(self, ticket, "no agent running");
+            }
+            if self.wait_turn_end(job)? {
+                continue;
             }
 
             // 2. Agent or shell in front.
@@ -557,28 +625,40 @@ impl Runner {
                 self.cancelled()?;
             }
             if job.opts.strict {
-                self.strict_check(ticket, "pre-paste readiness")?;
+                self.strict_check(ticket, "pre-paste readiness", None)?;
             }
             match self.before_paste(job, after_reset)? {
                 Front::Agent => {}
                 Front::WaitForReady => continue,
                 Front::Shell(outcome) => return Ok(outcome),
             }
-
             // 5. Paste.
-            let after_serial = self.paste(&job.text)?;
+            before_write(self);
+            let Some(paste) = self.paste(&job.text, Some(lifecycle), job.intent.turn_wait())?
+            else {
+                // A follow-up belongs to the launch that accepted the reset.
+                if after_reset.is_some() {
+                    return Err(AbortReason::SubmitUnverified);
+                }
+                trace!(
+                    self,
+                    ticket, "the launch changed or a turn started: checking readiness again"
+                );
+                continue;
+            };
             trace!(self, ticket, "pasted");
             self.cancelled()?;
 
             // 6. Submit.
             if job.opts.submit {
-                self.wait_paste_landed(after_serial)?;
-                let submitted = self.submit_with_verification(job, after_serial);
+                self.wait_paste_landed(paste.serial)?;
+                let submitted = self.submit_with_verification(job, paste);
                 if submitted == Err(AbortReason::DialogBlocking) {
                     // The agent can leave its question on screen and its unread paste
                     // on the shell's line. Check the owner after any post-paste match.
                     self.agent_before_enter(
                         ticket,
+                        paste,
                         job.opts.strict.then_some("question after paste"),
                     )?;
                 }
@@ -587,9 +667,10 @@ impl Runner {
                 // An agent that left without reading the paste leaves it to the shell — a
                 // multi-line buffer one line kill does not empty (zsh). It leaves only once
                 // the input is there: read the owner once the paste settled, not at once.
-                self.wait_paste_landed(after_serial)?;
+                self.wait_paste_landed(paste.serial)?;
                 self.no_shell_holding_the_paste(
                     ticket,
+                    paste,
                     "the shell is in front after the paste: its input line interrupted",
                 )?;
             }
@@ -648,11 +729,11 @@ impl Runner {
     /// nothing: `ForegroundUnproven`).
     fn front(&mut self, job: &mut MessageJob, paste: bool) -> Step<Front> {
         let ticket = job.ticket;
-        let (owner, front, agent) = self.owner(ticket)?;
+        let (owner, front, agent) = self.owner(ticket, None)?;
         let trusted_shell = self.ctl.cfg.trusted_owner(front.fg) == Some(ForegroundOwner::Shell);
         if job.opts.strict && (paste || !trusted_shell) {
             let point = if paste { "paste" } else { "the foreground" };
-            self.strict_verdict(ticket, point, &front, agent)?;
+            self.strict_verdict(ticket, point, &front, agent, None)?;
         }
         match owner {
             Owner::Agent => return Ok(Front::Agent),
@@ -675,18 +756,22 @@ impl Runner {
     /// the state, which learns the agent's program from it while one is expected
     /// (`CtlState::observe`), and traced. Also the read and the agent's program it was
     /// judged against.
-    pub(crate) fn owner(&self, ticket: TicketId) -> Step<(Owner, FrontRead, AgentProgram)> {
+    pub(crate) fn owner(
+        &self,
+        ticket: TicketId,
+        lifecycle: Option<u64>,
+    ) -> Step<(Owner, FrontRead, AgentProgram)> {
         self.cancelled()?;
         let front = self.ctl.read_front();
-        self.cancelled()?;
         trace!(
             self,
             ticket, "foreground {:?} ({:?})", front.fg.owner, front.fg.confidence
         );
         let agent = self.ctl.update(|st, _| {
+            st.check_delivery_lifecycle(lifecycle)?;
             st.observe(&front);
-            st.program
-        });
+            Ok(st.program)
+        })?;
         let owner = job_owner(front.shell, front.program, agent);
         Ok((owner, front, agent))
     }
@@ -746,7 +831,7 @@ impl Runner {
                 self,
                 ticket, "still the shell: pasting one line without Enter"
             );
-            self.paste(&text)?;
+            self.paste(&text, None, None)?;
         } else {
             trace!(
                 self,
@@ -762,7 +847,7 @@ impl Runner {
     /// meanwhile gets neither a Ctrl-C nor the text) and have got no line from the host
     /// meanwhile (else `ShellOnly`).
     fn still_the_shell(&self, ticket: TicketId, before: &FrontRead) -> Step<FrontRead> {
-        let (owner, now, _) = self.owner(ticket)?;
+        let (owner, now, _) = self.owner(ticket, None)?;
         if owner != Owner::Shell {
             trace!(
                 self,
@@ -858,17 +943,19 @@ impl Runner {
     /// agent could have left unseen (`CtlState::could_have_left`) the foreground is read
     /// every [`LEFT_POLL`]: the shell in front (a trusted answer) ⇒ it left, marked gone
     /// (`false`). Nothing else would end the wait for an agent that exited from a dialog
-    /// left to the user: the dialog stays on screen and keeps the gate parked.
-    fn wait_agent_ready(&self, ticket: TicketId) -> Step<bool> {
+    /// left to the user: the dialog stays on screen and keeps the gate parked. The
+    /// returned lifecycle identifies the launch for which the gate made its decision.
+    fn wait_agent_ready(&self, ticket: TicketId) -> Step<(bool, u64)> {
         loop {
             let waited = self.ctl.wait_until(Instant::now() + LEFT_POLL, |st| {
                 if let Some(reason) = st.cancel_reason() {
                     return Some(Err(reason));
                 }
                 if !st.gate.running() {
-                    return Some(Ok(false));
+                    return Some(Ok((false, st.lifecycle_revision())));
                 }
-                (st.gate.ready() && !st.launch_held()).then_some(Ok(true))
+                (st.gate.ready() && !st.launch_held())
+                    .then_some(Ok((true, st.lifecycle_revision())))
             });
             if let Some(ready) = waited {
                 return ready;
@@ -899,19 +986,29 @@ impl Runner {
     }
 
     /// One bracketed-paste write (`ESC[200~` text `ESC[201~`, no newline); returns the
-    /// chunks already fed immediately before it is queued. Sample before enqueueing so
-    /// a fast echo cannot be included in the fence. Later output may still be unrelated;
-    /// the submit path also requires recognising this text in the composer.
-    pub(crate) fn paste(&self, text: &str) -> Step<u64> {
+    /// lifecycle and chunks already fed. An agent paste carries the lifecycle from the
+    /// ready gate through the writer lock, which orders the check and enqueue with launch
+    /// keys. Only the inert shell fallback omits the lifecycle. `Ok(None)` withholds a
+    /// paste when the launch changed or the turn gate closed.
+    pub(super) fn paste(
+        &self,
+        text: &str,
+        expected_lifecycle: Option<u64>,
+        turn_wait: Option<&mut TurnWait>,
+    ) -> Step<Option<PasteFence>> {
         let mut bytes = Vec::with_capacity(text.len() + 12);
         bytes.extend_from_slice(b"\x1b[200~");
         bytes.extend_from_slice(text.as_bytes());
         bytes.extend_from_slice(b"\x1b[201~");
-        // It may end up on the shell's line: later launch lines interrupt it first.
-        self.ctl.update(|st, _| st.note_paste());
-        let before = self.ctl.term().output_chunks();
-        self.write(&bytes)?;
-        Ok(before)
+        let mut fence = Err(AbortReason::SubmitUnverified);
+        self.ctl
+            .term()
+            .write_if(&bytes, || {
+                fence = self.ctl.prepare_paste(expected_lifecycle, turn_wait);
+                matches!(fence, Ok(Some(_)))
+            })
+            .map_err(|e| self.write_failed(e))?;
+        fence
     }
 
     /// `text` typed as is, without bracketed-paste markers — the shell fallback's single
@@ -976,7 +1073,7 @@ impl Runner {
 
     /// Waits until the paste after `after_serial` (the fed count) landed
     /// (`settle::paste_landed`); no verdict while the reader is ahead of the view.
-    fn wait_paste_landed(&self, after_serial: u64) -> Step<()> {
+    pub(super) fn wait_paste_landed(&self, after_serial: u64) -> Step<settle::Landed> {
         let timing = &self.ctl.cfg.timing;
         let start = Instant::now();
         loop {
@@ -992,7 +1089,7 @@ impl Runner {
                 start,
             );
             match verdict {
-                Settle::Done(()) => return Ok(()),
+                Settle::Done(landed) => return Ok(landed),
                 Settle::Wait(at) => self.ctl.sleep_until(at)?,
             }
         }
@@ -1064,6 +1161,7 @@ impl Runner {
             Ok(ProfileRead {
                 value: value.filter(|_| current).transpose()?,
                 view: st.view,
+                lifecycle: st.lifecycle_revision(),
                 unseen: st.view.unseen(fed),
             })
         })

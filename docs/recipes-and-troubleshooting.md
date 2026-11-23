@@ -92,6 +92,11 @@ cargo run -p agent-link --example capture --features screen -- \
 ### `AbortReason::SubmitUnverified`
 - **Likely cause:** Either the profile cannot read its composer (`opencode`, `cursor`), the CLI cleared/redrew asynchronously without showing the expected transition within `submit_verify_window` (700 ms), or paste was never echoed.
 - **Fix:** **Do not automatically resend** (`SubmitUnverified` often occurs after the message was already accepted). Use `codex`/`claude`/`pi` or a custom measured `AgentProfile::pending_input` implementation, or switch to structured stdio (`codex`, `acp`, `claude`, `rpc`) for protocol-level request/turn confirmation.
+- **Unreadable composer only:** if unverified submission is acceptable, set `SendOptions::unreadable_composer` to `UnreadableComposer::EnterOnce` (and use `reset_with` for resets). The Enter is written once without evidence and the outcome becomes `UnverifiedEnter`. A paste whose output never goes quiet still gets no Enter.
+
+### `AbortReason::UnverifiedEnter`
+- **Cause:** The send opted into `UnreadableComposer::EnterOnce` and the profile could not read its composer. Exactly one Enter was written after the paste's output went quiet; nothing confirmed what it did.
+- **Fix:** Treat the message as sent but unconfirmed. **Do not automatically resend**, because a resend can submit twice. Check the agent's reply (for example a transcript source or the screen) to confirm.
 
 ### Native adapter closes with `Failure::ConsumerLagged` or `Overloaded`
 - **Likely cause:** The host stopped draining `events.recv_until(...)` long enough for `events` / `event_bytes` to saturate, or reverse requests exceeded `control_capacity` / `approvals`.

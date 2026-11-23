@@ -7,7 +7,8 @@
 //!   [`Activity`]. Configured by an [`AgentSpec`] and its [`Timing`].
 //! - [`AgentTerminal::send`] delivers a message: queued in order, pasted when the agent is
 //!   ready and its output paused, submitted with a verified Enter ([`SendOptions`]: also
-//!   strict foreground proofs and a commit-point check, [`Revalidate`]); the [`Ticket`]
+//!   strict foreground proofs and a commit-point check, [`Revalidate`], and an opt-in
+//!   unverified Enter for unreadable composers, [`UnreadableComposer`]); the [`Ticket`]
 //!   and an `Event::Delivery` report the [`DeliveryOutcome`].
 //!   [`AgentTerminal::reset`] sends the profile's fresh-conversation command,
 //!   [`AgentTerminal::reset_and_send`] a reset and then a message as one delivery.
@@ -66,6 +67,9 @@ pub mod detect;
 pub(crate) mod launch;
 mod leftover;
 mod limits;
+// Bounded loopback HTTP/1.1: the OpenCode ambient feed and question connections.
+#[cfg(feature = "turns")]
+mod loopback;
 mod monitor;
 mod permissions;
 mod profile;
@@ -78,6 +82,7 @@ mod startup;
 mod state;
 mod terminal;
 mod timing;
+mod turn_gate;
 #[cfg(all(unix, any(test, feature = "turns")))]
 pub mod turns;
 #[cfg(all(not(unix), feature = "turns"))]
@@ -88,6 +93,7 @@ mod verify;
 pub use activity::Activity;
 pub use delivery::{
     AbortReason, DeliveryOutcome, Revalidate, SendOptions, ShellFallback, Ticket, TicketId,
+    UnreadableComposer,
 };
 pub use launch::{LaunchPlan, ModelChoice, ShellKind};
 pub use limits::AgentLimits;

@@ -22,11 +22,12 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 use super::activity::ActivityTracker;
-use super::controller::Job;
+use super::controller::{Job, PasteFence, Step};
 use super::delivery::Resolution;
 use super::leftover::Leftover;
 use super::settle::{Evidence, OutputView, interrupt_due};
 use super::startup::{GateEffect, StartupGate};
+use super::turn_gate::{TurnGate, TurnWait, working};
 use super::{
     AbortReason, Activity, AgentLimits, AgentProfile, AgentState, DeliveryOutcome,
     ForegroundPolicy, ShellKind, TicketId, Timing, TrustPolicy,
@@ -280,6 +281,10 @@ pub(crate) struct CtlState {
     last_interrupt: Option<Interrupt>,
     /// Which program is the agent this terminal launched.
     pub(crate) program: AgentProgram,
+    /// Wall-clock time of the last shell [`launch`](Self::launch), for best-effort transcript
+    /// lookups that compare file times.
+    #[cfg(feature = "turns")]
+    launched_at: Option<std::time::SystemTime>,
     /// The screen the last launch line was typed over: its rows are not the agent's.
     leftover: Leftover,
     /// The last ticket handed out.
@@ -329,6 +334,8 @@ impl CtlState {
             held_launches: 0,
             last_interrupt: None,
             program: AgentProgram::Unknown,
+            #[cfg(feature = "turns")]
+            launched_at: None,
             leftover: Leftover::default(),
             last_ticket: 0,
             published,
@@ -343,6 +350,15 @@ impl CtlState {
     /// runs, the startup gate is armed, activity starts over as unknown.
     pub(crate) fn launch(&mut self, now: Instant) {
         self.lifecycle_revision = self.lifecycle_revision.wrapping_add(1);
+        #[cfg(feature = "turns")]
+        {
+            // A direct child's wall-clock fence comes from the pre-spawn hook.
+            self.launched_at = self
+                .cfg
+                .launch_line
+                .as_ref()
+                .map(|_| std::time::SystemTime::now());
+        }
         self.gate_revision = self.gate_revision.wrapping_add(1);
         #[cfg(feature = "questions")]
         self.invalidate_questions();
@@ -429,6 +445,21 @@ impl CtlState {
     /// still handles it waits for it instead of interrupting again.
     pub(crate) fn note_interrupt(&mut self, after: Interrupt) {
         self.last_interrupt = Some(after);
+    }
+
+    /// Apply the result of interrupting a shell that inherited an agent paste. A
+    /// replacement can start between queueing Ctrl-C and recording its output fence.
+    pub(super) fn finish_paste_interrupt(
+        &mut self,
+        lifecycle: u64,
+        after: Option<Interrupt>,
+    ) -> Step<()> {
+        self.check_delivery_lifecycle(Some(lifecycle))?;
+        self.agent_left();
+        if let Some(after) = after {
+            self.note_interrupt(after);
+        }
+        Ok(())
     }
 
     /// The Ctrl-C of held launch `number` was written; `written` is its fence, read right
@@ -545,6 +576,24 @@ impl CtlState {
     /// Identifies the current launch/departure boundary independently of gate polling.
     pub(crate) fn lifecycle_revision(&self) -> u64 {
         self.lifecycle_revision
+    }
+
+    /// After a paste, foreground evidence and control input belong to that launch.
+    pub(super) fn check_delivery_lifecycle(&self, expected: Option<u64>) -> Step<()> {
+        if let Some(reason) = self.cancel_reason() {
+            return Err(reason);
+        }
+        if expected.is_some_and(|revision| revision != self.lifecycle_revision) {
+            return Err(AbortReason::SubmitUnverified);
+        }
+        Ok(())
+    }
+
+    /// When the shell launch line was issued. Direct children use the PTY spawn time.
+    /// Kept after the shell-launched agent left.
+    #[cfg(feature = "turns")]
+    pub(crate) fn launched_at(&self) -> Option<std::time::SystemTime> {
+        self.launched_at
     }
 
     /// The rows present at launch. A delivery can clone this snapshot under the lock
@@ -1015,6 +1064,39 @@ impl Controller {
         &self.term
     }
 
+    /// Called with the terminal writer locked. Record the paste for later shell-line
+    /// cleanup only once this launch is allowed to receive it.
+    pub(super) fn prepare_paste(
+        &self,
+        expected_lifecycle: Option<u64>,
+        turn_wait: Option<&mut TurnWait>,
+    ) -> Step<Option<PasteFence>> {
+        let mut st = self.lock();
+        if let Some(reason) = st.cancel_reason() {
+            return Err(reason);
+        }
+        let lifecycle = st.lifecycle_revision();
+        if expected_lifecycle.is_some_and(|expected| lifecycle != expected) {
+            return Ok(None);
+        }
+        if let Some(wait) = turn_wait {
+            match wait.look(
+                self.cfg.timing.reset_turn_wait,
+                working(&st),
+                Instant::now(),
+            ) {
+                TurnGate::Open => {}
+                TurnGate::Wait(_) => return Ok(None),
+                TurnGate::Expired => return Err(AbortReason::AgentWorking),
+            }
+        }
+        st.note_paste();
+        Ok(Some(PasteFence {
+            lifecycle,
+            serial: self.term.output_chunks(),
+        }))
+    }
+
     fn lock(&self) -> MutexGuard<'_, CtlState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -1271,10 +1353,14 @@ impl Controller {
     /// Writes a Ctrl-C; returns its fence (the chunks fed right after it was queued).
     pub(crate) fn interrupt(&self) -> Result<Interrupt> {
         self.term.write(b"\x03")?;
-        Ok(Interrupt {
+        Ok(self.interrupt_fence())
+    }
+
+    pub(super) fn interrupt_fence(&self) -> Interrupt {
+        Interrupt {
             fence: self.term.output_chunks(),
             at: Instant::now(),
-        })
+        }
     }
 
     fn type_keys_logged(&self, launch: LaunchKeys) {

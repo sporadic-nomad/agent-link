@@ -1,4 +1,5 @@
-//! Fresh tool calls from the verified transcript parser. A malformed or ambiguous
+//! Fresh tool calls from the verified transcript parser, and from the built-in Claude and
+//! Codex parsers of the best-effort ambient tier (every platform). A malformed or ambiguous
 //! request withdraws the previous one. Raw JSON slices retain duplicate-field detection
 //! and leave unrelated tool arguments and results undecoded.
 use super::{MAX_OPTIONS, MAX_QUESTION_BYTES, MAX_QUESTIONS, PendingQuestion, QuestionItem};

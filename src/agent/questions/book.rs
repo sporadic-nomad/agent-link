@@ -22,6 +22,9 @@ pub(in crate::agent) enum Source {
     Screen,
     #[cfg(unix)]
     Transcript(Arc<crate::agent::turns::TurnReceiver>),
+    /// A best-effort ambient attachment's transcript, corroborated on screen like
+    /// [`Transcript`](Self::Transcript).
+    Ambient(crate::agent::turns::ambient::Questions),
     Feed(Arc<dyn QuestionFeed>),
 }
 
@@ -31,8 +34,23 @@ impl std::fmt::Debug for Source {
             Self::Screen => "Screen",
             #[cfg(unix)]
             Self::Transcript(_) => "Transcript",
+            Self::Ambient(_) => "Ambient",
             Self::Feed(_) => "Feed",
         })
+    }
+}
+
+impl Source {
+    /// The question a transcript source shows asked now; `None` for the screen and feeds.
+    pub(super) fn transcript_question(
+        &self,
+    ) -> Option<Result<Option<Arc<PendingQuestion>>, AnswerError>> {
+        match self {
+            #[cfg(unix)]
+            Self::Transcript(reader) => Some(reader.pending_question()),
+            Self::Ambient(source) => Some(source.pending_question()),
+            Self::Screen | Self::Feed(_) => None,
+        }
     }
 }
 
@@ -299,18 +317,13 @@ impl Source {
                 None,
             );
         }
-        #[cfg(unix)]
-        let pending = match self {
-            Self::Transcript(reader) => match reader.pending_question() {
-                Ok(Some(pending)) => Some(pending),
-                Ok(None) => return (Seen::Absent, None),
-                Err(AnswerError::NotOpen) => return (Seen::Gone, None),
-                Err(_) => return (Seen::Torn, None),
-            },
-            _ => None,
+        let pending = match self.transcript_question() {
+            None => None,
+            Some(Ok(Some(pending))) => Some(pending),
+            Some(Ok(None)) => return (Seen::Absent, None),
+            Some(Err(AnswerError::NotOpen)) => return (Seen::Gone, None),
+            Some(Err(_)) => return (Seen::Torn, None),
         };
-        #[cfg(not(unix))]
-        let pending: Option<Arc<PendingQuestion>> = None;
         let obs = runner.observation();
         let seen = runner.read_observation(obs.as_ref(), None, |p, screen, leftover| {
             let screen = leftover.fresh(screen);
@@ -465,6 +478,50 @@ impl AgentTerminal {
                 "no supported transcript question source".into(),
             ))
         }
+    }
+
+    /// Corroborate the questions a best-effort ambient attachment's transcript shows asked
+    /// against this terminal's screen, on every platform. The built-in Claude
+    /// (`AskUserQuestion`) and Codex (Plan-mode `request_user_input`) sources read them;
+    /// see [`AmbientParser::question`](crate::agent::turns::ambient::AmbientParser::question).
+    /// Keep polling the receiver for replies: stopping or dropping it ends its authority to
+    /// answer a question.
+    ///
+    /// The same rules as for [`observe_transcript_questions`](Self::observe_transcript_questions)
+    /// apply to what is relayed and answered: a call must follow a prompt the attachment
+    /// read (written after it started reading), the currently displayed question must agree with
+    /// the recorded prompt and all visible option labels (checked again before every
+    /// answer key), the agent's program must own the terminal, and a launch change, screen
+    /// change or reattachment fences the source. **Weaker evidence:** the transcript is the
+    /// user's own, of whatever CLI version is installed, with no writer exclusion or
+    /// attribution; another process can write a matching record. The on-screen dialog is
+    /// what makes a relayed question this terminal's, and the keys go only to that dialog.
+    /// The question is the one the attachment's worker last read (every
+    /// [`AmbientOptions::poll`](crate::agent::turns::ambient::AmbientOptions::poll)); no file
+    /// is read again before an answer key. Like every non-screen source, this one ends with
+    /// the agent's launch: observe again after a relaunch.
+    ///
+    /// Returns [`Error::InvalidInput`](crate::Error::InvalidInput) for a receiver of
+    /// another terminal or one that closed, and [`Error::Unsupported`](crate::Error::Unsupported)
+    /// for a feed attachment (OpenCode: use
+    /// [`OpenCodeAmbientQuestions`](super::opencode::OpenCodeAmbientQuestions)) or a
+    /// terminal without a profile.
+    pub fn observe_ambient_transcript_questions(
+        &self,
+        receiver: &crate::agent::turns::ambient::AmbientReceiver,
+    ) -> crate::Result<()> {
+        let source = receiver.questions();
+        if !source.belongs_to(&self.ctl) {
+            return Err(crate::Error::InvalidInput(
+                "ambient receiver belongs to a different or closed terminal".into(),
+            ));
+        }
+        if !source.reads_transcript() {
+            return Err(crate::Error::Unsupported(
+                "ambient transcript questions require a transcript attachment".into(),
+            ));
+        }
+        self.start_questions(Source::Ambient(source))
     }
 
     /// Corroborate a Codex Plan question using this terminal's isolated transcript

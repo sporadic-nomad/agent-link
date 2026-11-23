@@ -155,6 +155,16 @@ impl AgentProfile for PiProfile {
     fn mcp_backend(&self, _: crate::tools::ToolTransport) -> Option<crate::tools::McpBackend> {
         Some(crate::tools::McpBackend::Pi)
     }
+    /// The project's session written last under `PI_CODING_AGENT_SESSION_DIR` (else
+    /// `<PI_CODING_AGENT_DIR or ~/.pi/agent>/sessions/--<project>--`); pi writes no end
+    /// record, so every turn end is inferred (the next prompt, or quiet). Best effort, see
+    /// [`turns::ambient`](crate::agent::turns::ambient).
+    #[cfg(feature = "turns")]
+    fn ambient_turns(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::agent::turns::ambient::AmbientSource>> {
+        Some(std::sync::Arc::new(super::ambient::pi::PiAmbient::default()))
+    }
     fn compatibility(&self) -> crate::agent::compatibility::Compatibility {
         use crate::agent::compatibility::{Compatibility, Evidence, EvidenceKind, Support};
         Compatibility {
@@ -181,6 +191,21 @@ impl AgentProfile for PiProfile {
                     cli_version: Some("1.5.2"),
                     ..super::MODEL_ARGV_EVIDENCE
                 },
+                #[cfg(feature = "turns")]
+                Evidence {
+                    cli_version: Some("0.85.1"),
+                    source: "tests/fixtures/transcripts/ambient/pi-0.85.1/README.md",
+                    ..super::AMBIENT_PARSING
+                },
+                #[cfg(feature = "turns")]
+                Evidence {
+                    cli_version: Some("1.5.2"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/transcripts/pi-1.5.2/README.md",
+                    ..super::AMBIENT_PARSING
+                },
+                #[cfg(feature = "turns")]
+                super::AMBIENT_LOOKUP,
             ],
         }
     }

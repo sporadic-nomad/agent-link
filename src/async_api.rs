@@ -7,6 +7,8 @@
 //!   the receiver its `spawn` returned.
 //! - `Ticket::outcome` (feature `agent`) awaits a delivery's outcome;
 //!   `AgentTerminal::send_async` is `send` plus that.
+//! - `recv` and `status_change` on `agent::turns::TurnReceiver` and `TranscriptReceiver`
+//!   (feature `turns`) await turn observations; they live with those receivers.
 //! - `kill_async` on [`Terminal`], `AgentTerminal` and `RpcChild` (feature `rpc`) runs the
 //!   blocking teardown on Tokio's blocking pool.
 //!
@@ -31,7 +33,8 @@
 //! stream and forwards `poll_next` (the stream is `Unpin`).
 //!
 //! **Tickets.** `Ticket::outcome` costs no thread: the ticket's slot wakes its waiting tasks
-//! when the delivery ends. A full receiver or stream stalls a running delivery
+//! when the delivery ends. Turn receivers wake their waiting tasks the same way when
+//! they publish, end or are stopped. A full receiver or stream stalls a running delivery
 //! (back-pressure), so never await a delivery in the only task that drains that terminal's
 //! events.
 //!

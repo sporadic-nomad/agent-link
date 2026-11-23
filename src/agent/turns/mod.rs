@@ -1,4 +1,12 @@
-//! Turn observations from host-controlled direct PTYs on macOS arm64.
+//! Turn observations from host-controlled direct PTYs on macOS arm64, and a separate
+//! best-effort tier for every other terminal.
+//!
+//! The [`ambient`] tier reads an agent CLI's own transcript for any [`AgentTerminal`]
+//! (shell or direct spawn, Unix or Windows) without a lease, an isolated root or a pinned
+//! version. It provides no writer exclusion and no attribution guarantee; everything else
+//! in this module is the controlled, verified tier described below.
+//!
+//! [`AgentTerminal`]: crate::agent::AgentTerminal
 //!
 //! Codex, Pi and Cursor use an [`IsolatedTranscriptRoot`] per terminal. A
 //! [`TranscriptReceiver`] yields provider-specific [`TranscriptTurn`] values that
@@ -33,6 +41,11 @@
 //! }
 //! ```
 //!
+//! Receivers are pulled: [`TurnReceiver::try_recv`] never blocks, while
+//! [`TurnReceiver::recv_timeout`] and [`TurnReceiver::wait_status_change`] block between
+//! pulls until the receiver changes, instead of polling. With `tokio`,
+//! `TurnReceiver::recv` and `status_change` await the same wakeups.
+//!
 //! On a nonempty pull the receiver resamples the writer's current session, pinned file,
 //! cursor and terminal. A gap discards pending replies. A fresh attachment takes a new EOF
 //! baseline. These checks can miss a switch away and back between samples and edits to
@@ -40,6 +53,8 @@
 //! and append indistinguishable replies, so hosts must keep enforcing writer exclusion
 //! until they revoke the lease.
 
+#[cfg(feature = "turns")]
+pub mod ambient;
 mod api;
 #[cfg(feature = "turns")]
 mod providers;
@@ -50,6 +65,7 @@ mod reader;
 mod snapshots;
 mod stream;
 mod transcript;
+mod wake;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -68,7 +84,7 @@ use crate::SpawnSpec;
 
 #[cfg(feature = "turns")]
 pub use api::ExclusiveClaudeRoot;
-pub use api::{AttachError, TurnGap, TurnOptions, TurnReply, TurnStatus};
+pub use api::{AttachError, TurnGap, TurnOptions, TurnRecvError, TurnReply, TurnStatus};
 pub(super) use api::{
     TurnGap as Gap, TurnOptions as Limits, TurnReply as Reply, TurnStatus as Status,
 };

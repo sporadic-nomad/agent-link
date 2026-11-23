@@ -486,7 +486,7 @@ impl std::fmt::Debug for Terminal {
 
 #[allow(dead_code)] // the agent controller and its delivery jobs use a subset each
 impl TerminalHandle {
-    #[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
+    #[cfg(all(feature = "agent", any(test, feature = "turns")))]
     pub(crate) fn turns_ended(&self) -> bool {
         self.inner.bus.turns_ended.load(Ordering::Acquire)
     }
@@ -509,6 +509,18 @@ impl TerminalHandle {
 
     pub(crate) fn write(&self, bytes: &[u8]) -> Result<()> {
         self.inner.write(bytes)
+    }
+
+    /// Check and enqueue in order with other terminal writes, including launch keys.
+    /// The check may read controller state. It must not run host code or write input.
+    #[cfg(feature = "agent")]
+    pub(crate) fn write_if(&self, bytes: &[u8], check: impl FnOnce() -> bool) -> Result<bool> {
+        let writer = lock(&self.inner.writer);
+        if !check() {
+            return Ok(false);
+        }
+        writer.as_ref().ok_or(Error::Closed)?.send(bytes)?;
+        Ok(true)
     }
 
     pub(crate) fn resize(&self, size: PtySize) -> Result<()> {
@@ -681,7 +693,7 @@ impl Inner {
 
     fn try_wait(&self) -> Option<ExitInfo> {
         let exit = lock(&self.child).try_wait();
-        #[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
+        #[cfg(all(feature = "agent", any(test, feature = "turns")))]
         if exit.is_some() {
             self.bus.turns_ended.store(true, Ordering::Release);
         }

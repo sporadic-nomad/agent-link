@@ -8,7 +8,7 @@
 //! | `launch()` program | `claude` | `codex` | `pi` | `opencode` | `agent` |
 //! | unattended (default) | `--permission-mode bypassPermissions` if the profile accepts the bypass warning | `--dangerously-bypass-approvals-and-sandbox` | no flags needed | env default `OPENCODE_PERMISSION={"*":"allow"}` | `--force` (explicit denies still apply) |
 //! | every launch | — | `-c check_for_update_on_startup=false` | — | — | — |
-//! | explicit PTY model and optional effort | `--model`, `--effort` | `-m`, `-c model_reasoning_effort=…` | `--model`, `--thinking` | unsupported | unsupported |
+//! | explicit PTY model and optional effort | `--model`, `--effort` | `-m`, `-c model_reasoning_effort=…` | `--model`, `--thinking` | `-m` only; an effort is unsupported | unsupported |
 //! | pre-trust ([`PreTrust::FlagsOnly`](crate::agent::PreTrust::FlagsOnly)) | — | `-c projects={"<cwd>"={trust_level="trusted"}}`, not under cmd.exe; saves nothing | `--approve`; saves nothing | — | `--trust`; **saves** a trust record |
 //! | isolated PTY transcript observation | Explicit final | Explicit final | Inferred stop | — | Explicit or next-prompt completion, opt-in mixed text |
 //! | `reset_command()` | `/clear` | `/clear` | `/new` | `/new` | `/new` |
@@ -17,20 +17,28 @@
 //! | title spinner | no (`✳`/`◐`) | Braille | not seen | not measured | not measured |
 //! | sync frames | VS Code identity only | always | always | once DECRQM 2026 is answered | not at cold launch |
 //! | PTY final replies (optional `turns`) | 2.1.296 on macOS arm64, direct launch with a host-enforced exclusive writer | — | — | — | — |
+//! | best-effort ambient PTY turns (optional `turns`, any PTY, every platform; `AgentProfile::ambient_turns`) | explicit `turn_duration` or interruption | explicit `task_complete` / `turn_aborted` | inferred: next prompt or quiet | TUI server feed after `spawn_with_ambient_feed` (1.18.21 shapes, declared) | explicit `turn_ended` success or next prompt; completion only, mixed text opt-in |
 //! | [`AgentProfile::question_dialog`] | `AskUserQuestion` and its answer review (2.1.296) | Plan selections and notes (0.154.0) | — | `question` picker (1.18.21) | shell approval (2026.11.13-eacade1 packaged renderer) |
+//! | best-effort ambient questions (optional `questions`, any PTY: `observe_ambient_transcript_questions`, `OpenCodeAmbientQuestions`) | `AskUserQuestion` from the ambient transcript, relayed while its dialog shows it | Plan `request_user_input` from the ambient rollout, relayed while its dialog shows it | — | `GET /question` for the host-specified session of its TUI server after `spawn_with_ambient_feed` (1.18.21 shapes, declared) | — (its shell approval is read off the screen by `observe_questions`) |
 //! | screen evidence | 2.1.293; live smoke 2.1.295 | 0.154.0 (dialog wording since 0.142.5) | 0.85.1 | 1.18.21 | trust screen: cursor-agent 2026.09.23 |
 //!
 //! OSC 9;4 progress was not seen on any agent (no real turn measured).
 //! RPC permissions are configurable through
 //! [`AgentProfile::rpc_launch_with_options`].
 //! PTY model and effort flags come from Claude Code 2.1.327, Codex CLI 0.170.0
-//! and Pi 1.5.2. The argv construction tests use synthetic choices.
+//! and Pi 1.5.2. OpenCode's `-m` is listed by opencode 1.18.21's TUI help per prior
+//! measurement; not re-recorded here; opencode 2.x not covered. Its record is a
+//! declaration. The argv construction tests use synthetic choices.
 //! Live permission checks separately cover Codex 0.169.0 config/read and OpenCode
 //! 1.18.25 subagent external-file reads with a local model peer. Cursor support is work
 //! in progress. Its 2026.11.13 `--force` launch reached login, and its shell approval
 //! renderer was recorded separately. Authenticated startup/composer validation is pending.
 //! These checks do not extend the screen versions above or certify native Windows.
 //! Pi and custom profiles inherit the default `false` question predicate.
+//!
+//! The ambient sources pin no CLI version; their fixtures were recorded on Claude 2.1.296,
+//! Codex 0.154.0, Pi 0.85.1 and 1.5.2, and Cursor 2026.10.01 and 2026.11.13-eacade1 (see
+//! `agent::turns::ambient`).
 //!
 //! Profiles read screen text, so a CLI release that rewords a dialog or its composer can
 //! break detection; the controller then logs a `startup markers not recognised` report.
@@ -49,6 +57,9 @@
 //! assert_eq!(registry.ids(), ["claude", "opencode", "pi", "codex", "cursor"]);
 //! ```
 
+/// Best-effort transcript sources for [`AgentProfile::ambient_turns`], on every platform.
+#[cfg(feature = "turns")]
+pub(in crate::agent) mod ambient;
 pub mod claude;
 pub mod codex;
 pub mod cursor;
@@ -59,6 +70,12 @@ pub(in crate::agent) mod turns {
     pub(in crate::agent) mod claude;
     #[cfg(feature = "turns")]
     pub(in crate::agent) mod isolated;
+    pub(in crate::agent) mod json;
+}
+/// Elsewhere only the strict JSON helpers, for the question records of the ambient tier.
+#[cfg(all(not(unix), feature = "questions"))]
+pub(in crate::agent) mod turns {
+    #[allow(dead_code, reason = "the controlled tier's parsers are Unix-only")]
     pub(in crate::agent) mod json;
 }
 
@@ -79,6 +96,45 @@ const MODEL_ARGV_EVIDENCE: Evidence = Evidence::new(
     EvidenceKind::SyntheticFixture,
     "tests/profiles_launch.rs",
 );
+
+/// Best-effort ambient turn ends and replies parsed from a recorded transcript. Each
+/// profile names its capture, version and platform; no version is admitted or pinned.
+#[cfg(feature = "turns")]
+const AMBIENT_PARSING: Evidence = Evidence::new(
+    "best-effort ambient turn ends and replies",
+    EvidenceKind::CapturedTranscript,
+    "tests/fixtures/transcripts/ambient/README.md",
+);
+
+/// The built-in ambient lookups on temporary configuration roots, followed through a
+/// fake-agent PTY. No real CLI and no user configuration directory.
+#[cfg(feature = "turns")]
+const AMBIENT_LOOKUP: Evidence = Evidence::new(
+    "best-effort ambient transcript lookup on a direct fake-agent PTY",
+    EvidenceKind::SyntheticFixture,
+    "tests/ambient_sources.rs",
+);
+
+/// Best-effort ambient question records parsed from a recorded transcript; each profile
+/// names its capture and version.
+#[cfg(feature = "questions")]
+const AMBIENT_QUESTION_RECORDS: Evidence = Evidence::new(
+    "best-effort ambient question tool call and result",
+    EvidenceKind::CapturedTranscript,
+    "tests/fixtures/transcripts/ambient/README.md",
+);
+
+/// Ambient questions relayed and answered through the fake agent's dialog on real PTYs,
+/// with temporary transcripts or a synthetic OpenCode-like server. No real CLI.
+#[cfg(feature = "questions")]
+const AMBIENT_QUESTION_RELAY: Evidence = Evidence {
+    platform: Some("macos-aarch64"),
+    ..Evidence::new(
+        "best-effort ambient question relay and answer on a fake-agent PTY",
+        EvidenceKind::SyntheticFixture,
+        "tests/ambient_questions.rs",
+    )
+};
 
 /// Returns a fixed spelling from the profile's measured vocabulary.
 fn requested_effort(

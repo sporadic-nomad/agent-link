@@ -35,9 +35,10 @@
 //! ```
 //!
 //! Deliberately **std-only** (plus `libc` on unix), so the Windows branches can be
-//! type-checked for a Windows target from a non-Windows host. The exception is the
+//! type-checked for a Windows target from a non-Windows host. The exceptions are the
 //! crate-internal `job` module (Windows Job Object and process snapshots, `windows-sys`),
-//! which PTY sessions use.
+//! which PTY sessions use, and the crate-internal liveness check `pid_alive` (`turns`),
+//! which the ambient transcript lookups use.
 
 #[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
 pub(crate) mod instance;
@@ -161,6 +162,61 @@ pub fn kill_tree(pid: u32) {
     kill_process_tree(pid);
     #[cfg(not(any(unix, windows)))]
     let _ = pid;
+}
+
+/// Whether a process `pid` exists now: one this user may not signal (Unix) or open
+/// (Windows) counts. A pid can be reused once its process is reaped, so this proves only
+/// that *a* process has the number; callers compare a recorded start time too. Unix:
+/// `kill(pid, 0)`; Windows: a query-only handle and its exit code (a process that exited
+/// with code 259, `STILL_ACTIVE`, reads as running). Never signals or waits. Pid 0 is
+/// never alive. Other platforms: never alive.
+#[cfg(feature = "turns")]
+pub(crate) fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // 0 and negative pids name process groups for `kill`.
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        if pid <= 0 {
+            return false;
+        }
+        // SAFETY: signal 0 is not sent; `kill` only checks that the process exists.
+        if unsafe { libc::kill(pid, 0) } == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        if pid == 0 {
+            return false;
+        }
+        // SAFETY: a query-only, non-inheritable handle; nothing else is passed.
+        let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if raw.is_null() {
+            return std::io::Error::last_os_error().raw_os_error()
+                == Some(ERROR_ACCESS_DENIED as i32);
+        }
+        // SAFETY: `raw` is a fresh handle nothing else owns; dropping it closes it.
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut code = 0u32;
+        // SAFETY: a live process handle and a valid out pointer.
+        let ok = unsafe { GetExitCodeProcess(handle.as_raw_handle(), &mut code) } != 0;
+        ok && code == STILL_ACTIVE as u32
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 /// Absolute path to a Windows-shipped console tool: `stem` →
@@ -421,6 +477,25 @@ mod tests {
                 .is_none(),
             "a running command should time out immediately"
         );
+    }
+
+    #[cfg(feature = "turns")]
+    #[test]
+    fn pid_alive_knows_this_process_and_no_impossible_pid() {
+        assert!(pid_alive(std::process::id()));
+        assert!(!pid_alive(0));
+        // Above every platform's pid range.
+        assert!(!pid_alive(999_999_999));
+    }
+
+    #[cfg(all(unix, feature = "turns"))]
+    #[test]
+    fn pid_alive_is_false_for_a_reaped_child() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        // Reaped: the number is free until the system reuses it.
+        assert!(!pid_alive(pid));
     }
 
     #[cfg(unix)]

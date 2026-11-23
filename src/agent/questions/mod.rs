@@ -4,6 +4,16 @@
 //! Drain its ordinary PTY events. A [`QuestionId`] belongs to one interactive terminal and
 //! one appearance of a question. Answer writes and message delivery run on the same job thread.
 //! Native stdio permissions use their adapter's own approval capabilities.
+//!
+//! Sources, one per terminal: the profile's screen parser
+//! ([`observe_questions`](super::AgentTerminal::observe_questions)), a controlled transcript
+//! ([`observe_transcript_questions`](super::AgentTerminal::observe_transcript_questions),
+//! [`observe_provider_questions`](super::AgentTerminal::observe_provider_questions)), a host
+//! feed ([`observe_feed_questions`](super::AgentTerminal::observe_feed_questions), such as
+//! [`opencode::OpenCodeQuestions`]), and — best effort, with weaker evidence — an ambient
+//! transcript attachment corroborated on screen
+//! ([`observe_ambient_transcript_questions`](super::AgentTerminal::observe_ambient_transcript_questions))
+//! or an OpenCode TUI's own server ([`opencode::OpenCodeAmbientQuestions`]).
 
 mod book;
 mod dispatch;
@@ -11,9 +21,7 @@ pub mod opencode;
 pub(in crate::agent) mod providers;
 #[cfg(test)]
 mod tests;
-#[cfg(unix)]
 mod transcript;
-#[cfg(unix)]
 pub(in crate::agent) use transcript::{TranscriptChange, provider_record};
 
 use std::fmt;
@@ -109,7 +117,7 @@ impl PendingQuestion {
         }
     }
 
-    fn valid(&self) -> bool {
+    pub(in crate::agent) fn valid(&self) -> bool {
         if self.id.len() > 128
             || self.id.chars().any(char::is_control)
             || !(1..=MAX_QUESTIONS).contains(&self.questions.len())

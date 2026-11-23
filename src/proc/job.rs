@@ -62,6 +62,8 @@ pub(crate) fn children_outside(entries: &[ProcEntry], members: &[u32], pid: u32)
         .any(|e| e.parent == pid && e.pid != pid && !members.contains(&e.pid))
 }
 
+#[cfg(all(windows, feature = "turns"))]
+pub(crate) use imp::snapshot_while;
 #[cfg(all(windows, test))]
 pub(crate) use imp::tree;
 #[cfg(windows)]
@@ -226,6 +228,14 @@ mod imp {
 
     /// Every running process with its parent (Toolhelp).
     pub(crate) fn snapshot() -> io::Result<Vec<ProcEntry>> {
+        snapshot_while(|| true)
+    }
+
+    /// Stop before the next Toolhelp call if the caller's time budget ran out.
+    pub(crate) fn snapshot_while(within_budget: impl Fn() -> bool) -> io::Result<Vec<ProcEntry>> {
+        if !within_budget() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
         // SAFETY: a process snapshot takes no pointers.
         let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if raw == INVALID_HANDLE_VALUE {
@@ -237,9 +247,15 @@ mod imp {
         let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         let mut entries = Vec::new();
+        if !within_budget() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
         // SAFETY: `entry` is a valid out-pointer with `dwSize` set.
         let mut more = unsafe { Process32FirstW(snap.as_raw_handle(), &mut entry) } != 0;
         while more {
+            if !within_budget() {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
             entries.push(ProcEntry {
                 pid: entry.th32ProcessID,
                 parent: entry.th32ParentProcessID,

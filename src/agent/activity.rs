@@ -1,10 +1,14 @@
 //! [`Activity`] and the tracker that derives it from the window title and progress
-//! reports. Informational only: it never gates a delivery.
+//! reports. It never gates a send; only an explicit reset under the opt-in turn gate
+//! ([`Timing::reset_turn_wait`](super::Timing::reset_turn_wait)) waits on it.
 
 use std::time::{Duration, Instant};
 
-/// Whether the agent is working, as its terminal signals tell. Informational: an agent that
-/// emits neither signal stays `Idle` or `Unknown`.
+/// Whether the agent is working, as its terminal signals tell. A heuristic: an agent that
+/// emits neither signal stays `Idle` or `Unknown`, and one that dies mid-turn stays
+/// `Working` (its spinner title stays) until the controller notices that it left. Only the
+/// opt-in reset turn gate
+/// ([`Timing::reset_turn_wait`](super::Timing::reset_turn_wait)) waits on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Activity {
     /// A working signal is on: a Braille spinner glyph leads the window title, or an

@@ -9,6 +9,8 @@
 //!   that then went quiet (byte quiet only: claude aggregates stdin ~100 ms after a paste
 //!   and absorbs an Enter that lands inside that window, so no early "landed" from a chip
 //!   on screen or a frame end), and never decides from a screen the view has not counted.
+//!   It says whether that output went quiet or the cap ended the wait ([`Landed`]): only
+//!   output that went quiet permits the opt-in unverified Enter of an unreadable composer.
 //! - [`SubmitCheck`]: after an Enter, only a screen quiet long enough — and fully counted
 //!   by the view — may testify whether the text left the composer; and only once something
 //!   came back after the paste (an agent that echoed nothing may not be reading).
@@ -197,11 +199,23 @@ pub(crate) fn lull_ready(
     Settle::Wait(now + next.max(MIN_POLL))
 }
 
+/// Why [`paste_landed`] ended.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Landed {
+    /// Counted output after the paste fence, then `quiet` without output. Output after
+    /// the paste is not proof that the paste reached the composer.
+    Echoed,
+    /// The cap: no output after the paste, output that never went quiet, or a count that
+    /// kept lagging behind the reader.
+    Max,
+}
+
 /// Port of the panel's paste-landed wait (`waitForPasteLanded`): output strictly after
 /// the paste fence (`after_serial` is the reader's fed count immediately before the
 /// paste was queued: earlier chunks are backlog, even when counted later) and
 /// then `quiet` without output; capped at `max`. The submit path separately requires
 /// visible pasted text before its Enter; this timing wait alone proves no delivery.
+/// The opt-in unverified Enter of an unreadable composer requires [`Landed::Echoed`].
 ///
 /// `unseen` (the reader fed chunks the view has not counted): not landed yet — the view's
 /// last output time is stale; only the counted view, caught up, decides.
@@ -213,15 +227,15 @@ pub(crate) fn paste_landed(
     quiet: Duration,
     max: Duration,
     start: Instant,
-) -> Settle<()> {
-    let elapsed = now.saturating_duration_since(start);
-    if elapsed >= max {
-        return Settle::Done(());
-    }
+) -> Settle<Landed> {
     let echoed = view.output_serial > after_serial;
     let since_output = view.since_output(now);
     if echoed && !unseen && since_output >= quiet {
-        return Settle::Done(());
+        return Settle::Done(Landed::Echoed);
+    }
+    let elapsed = now.saturating_duration_since(start);
+    if elapsed >= max {
+        return Settle::Done(Landed::Max);
     }
     // Before the echo, or while the count lags: poll. After it: wait out the quiet.
     let next = if echoed && !unseen {
@@ -635,7 +649,7 @@ mod tests {
         );
         assert_eq!(
             paste_landed(&v, false, c.at(1290), 4, quiet, max, start),
-            Settle::Done(())
+            Settle::Done(Landed::Echoed)
         );
     }
 
@@ -671,7 +685,7 @@ mod tests {
         );
         assert_eq!(
             paste_landed(&v, false, c.at(1950), 6, quiet, max, start),
-            Settle::Done(())
+            Settle::Done(Landed::Echoed)
         );
         // The cap still ends a lag that never clears.
         assert_eq!(
@@ -680,7 +694,7 @@ mod tests {
         );
         assert_eq!(
             paste_landed(&v, true, c.at(3000), 6, quiet, max, start),
-            Settle::Done(())
+            Settle::Done(Landed::Max)
         );
     }
 
@@ -695,13 +709,44 @@ mod tests {
         );
         assert_eq!(
             paste_landed(&v, false, c.at(3000), 4, quiet, max, start),
-            Settle::Done(())
+            Settle::Done(Landed::Max)
         );
         // An echo that never goes quiet: also the cap.
         let v = view(&c, 9, Some(2999));
         assert_eq!(
             paste_landed(&v, false, c.at(3000), 4, quiet, max, start),
-            Settle::Done(())
+            Settle::Done(Landed::Max)
+        );
+    }
+
+    /// The opt-in unverified Enter reads the reason: only counted output after the fence
+    /// that went quiet is an echo — also when it went quiet just as the cap came. Backlog
+    /// fed before the paste, a lagging count and output that keeps coming are not.
+    #[test]
+    fn only_counted_output_after_the_paste_that_went_quiet_is_an_echo() {
+        let c = Clock::new();
+        let (quiet, max, start) = (ms(250), ms(2000), c.at(1000));
+        let at_cap =
+            |v: &OutputView, unseen| paste_landed(v, unseen, c.at(3000), 6, quiet, max, start);
+        // Quiet for exactly `quiet` at the cap.
+        assert_eq!(
+            at_cap(&view(&c, 7, Some(2750)), false),
+            Settle::Done(Landed::Echoed)
+        );
+        // Backlog only (the reader had fed 6 at the fence), long quiet.
+        assert_eq!(
+            at_cap(&view(&c, 6, Some(1100)), false),
+            Settle::Done(Landed::Max)
+        );
+        // An echo, quiet, but the reader is ahead of the count.
+        assert_eq!(
+            at_cap(&view(&c, 7, Some(1100)), true),
+            Settle::Done(Landed::Max)
+        );
+        // An echo whose output continues.
+        assert_eq!(
+            at_cap(&view(&c, 40, Some(2900)), false),
+            Settle::Done(Landed::Max)
         );
     }
 

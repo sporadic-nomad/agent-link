@@ -14,7 +14,7 @@ The crate has no UI and no host-framework dependency: a desktop app, a TUI or a 
 harness renders the byte stream itself and drives the agent through a synchronous,
 thread-backed API. Async adapters for Tokio sit behind a feature.
 
-**Version: 0.3.0.** A standalone library for desktop apps, TUIs, services and
+**Version: 0.3.1.** A standalone library for desktop apps, TUIs, services and
 test harnesses. Before 1.0, minor releases may introduce breaking API changes. See the
 [user manual](docs/README.md) for usage guides, or
 [release preparation](CONTRIBUTING.md#release-preparation) for publication requirements.
@@ -33,8 +33,8 @@ sandbox. Configure `Permissions::AgentDefault` to use the CLI's policy, or
 | `env`, `shell`, `identity`, `resolve`, `proc` | always | The child's environment policy, login-shell argv, the `TERM` identity a child sees, `PATH`/`PATHEXT` launcher lookup, process-tree kill and timeout runners. |
 | `screen` | `screen` (default) | A headless terminal (`vt100`) fed every chunk before any receiver gets it: rows, cursor, modes; title, OSC 9;4 progress and sync-frame events. Answers terminal queries unless your renderer does. |
 | `agent` (`AgentTerminal`) | `agent` (default) | Built-in profiles for five CLIs. Types the launch line, answers startup dialogs, reports readiness and activity, delivers messages one at a time with a verified Enter; strict delivery, a commit-point check, reset. |
-| `agent::turns` | `turns` | Controlled direct PTYs on macOS arm64. Claude and Codex can yield explicit final replies, Pi yields inferred replies, and Cursor reports completion with separately opted-in mixed text. Each reader requires host-enforced writer isolation. [Claude setup](docs/agents-and-delivery.md#claude-pty-final-replies) · [Codex, Pi and Cursor setup](docs/pty-transcript-sources.md). |
-| `agent::questions` | `questions` | Observe a complete interactive question, then answer its terminal-local ID with a bounded ticket. Supported sources include verified Claude and Codex transcripts, a Cursor command approval and session-bound OpenCode feeds. [Setup and limits](docs/agents-and-delivery.md#pty-questions). |
+| `agent::turns` | `turns` | Controlled direct PTYs on macOS arm64. Claude and Codex can yield explicit final replies, Pi yields inferred replies, and Cursor reports completion with separately opted-in mixed text. Each reader requires host-enforced writer isolation. Receivers can wait with a timeout or, with `tokio`, be awaited. [Claude setup](docs/agents-and-delivery.md#claude-pty-final-replies) · [Codex, Pi and Cursor setup](docs/pty-transcript-sources.md). The separate `ambient` tier reads a CLI's own transcript for any PTY on Unix and Windows, with evidence labels but no writer exclusion or attribution guarantee; the Claude, Codex, Pi and Cursor profiles bring best-effort sources for the user's own configuration directory (Cursor's text only by opt-in). OpenCode, which writes no transcript, is read from its TUI's own loopback server after an opt-in launch (`AgentTerminal::spawn_with_ambient_feed`). An OpenCode launch that enables `--mini` returns `InvalidInput` before spawn. OpenCode uses assistant parent IDs and tool state to exclude narration from queued prompts, keeps auto-compaction within the original prompt and retries a trailing reply when its idle notification arrives before the server clears its busy status. An ambient transcript lookup that runs out of bytes reports `ReadBudgetExceeded`. Quiet and departure inference require a complete final transcript line. A transcript truncated during the initial scan resumes from the observed shorter EOF. New transcripts skip shared conversation prefixes. A repeated reply after the files diverge is delivered. A suspended shell launch resumes observation when its identified process group regains the foreground. Terminal closure reconciles the latest launch before the final lookup. On departure, the worker drains the known transcript and checks for a session switch using the departing launch’s context when lookup is allowed. Each drain pass checks the captured file identity and EOF. A replacement or a changed file revision at the same length closes the receiver with `IncompleteDrain`. Final feed pages share a two-second deadline. OpenCode uses only its existing verified connections during that drain. A previously observed transcript disappearing or an OpenCode fetch exhausting its final retries closes the receiver with `IncompleteDrain`. Queued turns remain available. Ambient receivers can wait and be awaited the same way. [Ambient turns](docs/pty-ambient-turns.md). |
+| `agent::questions` | `questions` | Observe a complete interactive question, then answer its terminal-local ID with a bounded ticket. Supported sources include verified Claude and Codex transcripts, a Cursor command approval and session-bound OpenCode feeds. Best effort on any PTY: Claude and Codex questions from an ambient attachment, relayed only while the screen shows the same question, and OpenCode questions from the TUI's own server after `spawn_with_ambient_feed`. Pass the displayed root session ID to `OpenCodeAmbientQuestions::new` and stop observation before switching sessions. [Setup and limits](docs/agents-and-delivery.md#pty-questions) · [Ambient questions](docs/agents-and-delivery.md#best-effort-ambient-questions). |
 | `tools` (`AgentTools`) | `tools` | Attaches consumer-owned CLI commands and MCP connections to one run, with child PATH/environment, provider configuration and temporary-file ownership. [Guide](docs/application-tools.md). |
 | `rpc` (`RpcChild`) | `rpc` | An agent CLI headless over stdio: one event per stdout line, a stderr tail, process-group teardown. |
 | `acp` (`AcpClient`) | `acp` | Optional bounded stable-v1 ACP adapter: strict session restore, text prompts, cooperative cancel and origin-bound permissions. [Guide](docs/rpc-and-native-adapters.md#agent-client-protocol-acp). |
@@ -45,7 +45,7 @@ sandbox. Configure `Permissions::AgentDefault` to use the CLI's policy, or
 | `approvals` (`Executor`) | `approvals` | Opt-in bounded native callback executor; explicit delegation and provider-specific token decisions. [Guide](docs/rpc-and-native-adapters.md#native-approval-callbacks-approvals). |
 | `transcript` (`Projector`) | `transcript` | Bounded presentation projection with native/raw provenance and explicit gaps; never delivery or completion authority. [Guide](docs/async-and-presentation.md#transcript-projection-transcript-feature). |
 | `observers` (`ObserverHub`) | `observers` | Bounded raw PTY observer fanout, replay/live fences and explicit slow-viewer disconnects. [Guide](docs/async-and-presentation.md#pty-observer-fanout-observers-feature). |
-| `async_api` (`EventStream`) | `tokio` | Event streams, awaitable tickets, `send_async`, `kill_async`. Uses Tokio's `sync` and `rt` only. |
+| `async_api` (`EventStream`) | `tokio` | Event streams, awaitable tickets and turn receivers, `send_async`, `kill_async`. Uses Tokio's `sync` and `rt` only. |
 
 The `tools` facade validates MCP HTTP hosts, ports and IPv6 syntax before launch. It also
 rejects Pi MCP environment/header templates and CLI directories that need PATH escaping,
@@ -179,6 +179,7 @@ For a Claude, Codex, or Pi shell launch, set `agent.model` to
 `Some(ModelChoice::new("model-id").with_effort("high"))`. Omit `with_effort` to pass
 the model string without a separate effort argument. The CLI interprets that string.
 Pi accepts `--model=…` and `--thinking=…` extension flags alongside this selection.
+OpenCode takes only the model (`-m`); a choice with an effort is refused.
 The default is `None`. Spawn rejects unsupported choices, choices on a bare shell or
 Direct child, and selected commands that exceed the shell line or PTY write limit.
 Shell launches use fish quoting when the resolved Unix shell is named `fish`.
@@ -236,7 +237,9 @@ cannot confirm submission. It is terminal evidence, not a protocol-level acknowl
 relaunch, so a one-line text was left on the shell's input line without Enter. `Aborted`
 names why nothing (or nothing more) was typed: `ShellOnly`, `ForegroundUnproven` (another
 program owns the terminal), `TrustPromptBlocking`, `DialogBlocking`, `SubmitUnverified`, … The example exits
-0 only on `Delivered`.
+0 only on `Delivered`. `UnverifiedEnter` occurs only with the
+`UnreadableComposer::EnterOnce` opt-in: one Enter was written without composer evidence. A redraw restarts the
+paste quiet interval before that Enter on both sends and resets.
 
 ### A JSON-lines child
 
@@ -371,6 +374,17 @@ result??;
   the pasted message, followed by fresh, stable evidence that it left a readable
   composer. Ordinary Enter retries are disabled by default. Opting in requires
   pending text and can submit twice when a CLI redraws late.
+  A composer the profile cannot read (OpenCode, Cursor) gets no Enter unless the send
+  sets `SendOptions::unreadable_composer` to `UnreadableComposer::EnterOnce`. Then,
+  after fresh output from the paste goes quiet, delivery rechecks composer readability
+  alongside questions and dialogs. If the composer is still unreadable and the
+  foreground check passes, delivery writes exactly one Enter without composer evidence.
+  That Enter reports `UnverifiedEnter` and is never retried or resent.
+  If the host relaunches before an agent paste is queued, sends and resets repeat
+  their readiness and foreground checks. A reset follow-up stays bound to the original launch.
+  A relaunch between paste and Enter withholds the pending Enter, any shell-cleanup Ctrl-C,
+  and any reset follow-up.
+  A relaunch after Enter while delivery is verifying the receipt gives `SubmitUnverified`.
   A profile that recognizes an open question stops even a paste-only send with
   `DialogBlocking`. A match after the paste stops the next Enter, including an opted-in
   retry. If the shell now owns the terminal, delivery sends Ctrl-C to clear its draft
@@ -383,7 +397,16 @@ result??;
   Ambiguous or unavailable reset evidence gives `SubmitUnverified`, even if Enter
   already reached the agent. Inspect the session before retrying. A delivered reset
   confirms observed submission. A host that needs proof of a new conversation must
-  obtain it separately.
+  obtain it separately. `reset_with(UnreadableComposer::EnterOnce)` and
+  `reset_and_send` with that option give an unreadable reset one unverified Enter.
+  A readable composer during its final Enter check aborts the reset and withholds the follow-up.
+  The follow-up is pasted only after fresh output from the reset settles. Without that
+  output, the follow-up is withheld. Even then, the follow-up can reach the old
+  conversation. Opt in to `Timing::reset_turn_wait` to hold a reset while the
+  agent's heuristic activity reads `Working`. The reset checks activity again under
+  the terminal writer lock before queuing its paste. A turn that outlasts the bound gives
+  `AgentWorking` with nothing typed.
+  [Turn gate](docs/agents-and-delivery.md#waiting-for-a-running-turn-opt-in)
 - **Input limits.** `InputLimits`, `AgentLimits` and `RpcLimits` bound pending input,
   including active writes and agent completions awaiting publication. Oversized or
   saturated input is refused without waiting on the child. Agent admission rejections
@@ -466,7 +489,9 @@ removing the WIP label. Claude, Codex and Pi include composer fixtures.
 OpenCode and Cursor composer layouts are not sufficiently measured for
 verified submits; unreadable layouts return
 `SubmitUnverified`. Use a measured custom profile or a structured RPC integration when
-verified delivery is required.
+verified delivery is required. A host that accepts unverified submission can opt into
+`UnreadableComposer::EnterOnce` (one Enter, reported as `UnverifiedEnter`); no live
+run shows that this Enter submits a message in either CLI.
 
 Profiles read screen text, so a reworded CLI release can break detection; the controller
 then logs a `startup markers not recognised` report. Replace a built-in with

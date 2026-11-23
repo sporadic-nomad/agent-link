@@ -227,6 +227,23 @@ impl EnvPolicy {
     pub(crate) fn removes(&self, key: &OsStr) -> bool {
         self.remove.iter().any(|k| same_key(k, key))
     }
+
+    /// The value a child spawned with this policy gets for `key`: the policy's own
+    /// (set and not removed), else this process's when the policy inherits and does not
+    /// remove `key`. Terminal identity defaults and `PATH` prepends are not applied
+    /// (use [`effective_path`](Self::effective_path) for `PATH`), and a login shell's
+    /// startup files can still change what a program it starts sees.
+    #[cfg(feature = "turns")]
+    pub(crate) fn child_var(&self, key: &OsStr) -> Option<OsString> {
+        if self.removes(key) {
+            return None;
+        }
+        match self.last_set(key) {
+            Some(value) => Some(value.to_os_string()),
+            None if self.inherit => std::env::var_os(key),
+            None => None,
+        }
+    }
 }
 
 /// Environment keys are case-insensitive on Windows.

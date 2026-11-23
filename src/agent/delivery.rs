@@ -19,7 +19,9 @@ impl fmt::Display for TicketId {
 }
 
 /// How a delivery ended. Only [`Delivered`](Self::Delivered) means the agent got the
-/// message (and, with [`SendOptions::submit`], that the submit was seen to take).
+/// message (and, with [`SendOptions::submit`], that the submit was seen to take). The
+/// opt-in [`UnreadableComposer::EnterOnce`] never yields `Delivered` for its unverified
+/// Enter: it ends [`AbortReason::UnverifiedEnter`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliveryOutcome {
     /// Pasted, and — for a submit — the Enter was verified on screen.
@@ -75,6 +77,14 @@ pub enum AbortReason {
     /// The profile recognized a fresh diagnostic refusing an explicit reset after Enter.
     /// A compound reset ends before the follow-up paste.
     ResetRejected,
+    /// An explicit reset under the opt-in turn gate
+    /// ([`Timing::reset_turn_wait`](super::Timing::reset_turn_wait)) still found the
+    /// agent's [`Activity`](super::Activity) `Working` when the wait ran out. Nothing was
+    /// typed: no reset command, no Enter, no follow-up; the conversation was not reset.
+    /// Activity is a heuristic (a title spinner or progress report), so this does not prove
+    /// that a turn is still running. A later retry cannot duplicate input from this
+    /// attempt.
+    AgentWorking,
     /// The commit-point check ([`SendOptions::revalidate`]) said no, or its handshake was
     /// not answered in time.
     Revalidate,
@@ -86,7 +96,30 @@ pub enum AbortReason {
     /// or a visible notice could predate its Enter. Its follow-up is withheld.
     /// Explicitly configured retries can write more. The agent may already have accepted
     /// the message or may accept it later: do not automatically resend this outcome.
+    /// A relaunch after the paste also withholds any pending Enter for that paste,
+    /// including a retry or a reset's Enter.
+    ///
+    /// With [`UnreadableComposer::EnterOnce`] an unreadable composer still ends here,
+    /// without an Enter, when no output followed the paste or that output never went
+    /// quiet. An ordinary send also withholds Enter if the final check finds a readable
+    /// composer. A [`reset_and_send`](super::AgentTerminal::reset_and_send) whose reset wrote
+    /// its unverified Enter also ends here, with the follow-up withheld (not pasted), when
+    /// no fresh output settled after that Enter.
     SubmitUnverified,
+    /// With the opt-in [`UnreadableComposer::EnterOnce`], the composer was unreadable
+    /// throughout the paste check and on the final screen. Delivery wrote **exactly one
+    /// Enter without composer evidence** after fresh output from the paste went quiet
+    /// and the foreground, dialog and question checks passed.
+    /// Nothing confirms that the agent read the paste or that the Enter submitted it, and
+    /// no Enter is retried. This is not [`DeliveryOutcome::Delivered`]: the message may
+    /// have been submitted, may still sit in the composer, or (when the agent's screen
+    /// changed between the checks and the write) may have gone elsewhere. Do not
+    /// automatically resend it — a resend can submit the message twice.
+    ///
+    /// A [`reset_and_send`](super::AgentTerminal::reset_and_send) ends here when either
+    /// half wrote its Enter this way and nothing else stopped it: a verified follow-up
+    /// cannot vouch for the reset before it.
+    UnverifiedEnter,
     /// The [`AgentTerminal`](super::AgentTerminal) was dropped. Its ticket is resolved
     /// independently of event delivery; final events during teardown are best effort.
     Disposed,
@@ -119,9 +152,11 @@ impl AbortReason {
             Self::ForegroundUnproven => "foreground_unproven",
             Self::TrustPromptBlocking => "trust_prompt_blocking",
             Self::ResetRejected => "reset_rejected",
+            Self::AgentWorking => "agent_working",
             Self::DialogBlocking => "dialog_blocking",
             Self::Revalidate => "revalidate",
             Self::SubmitUnverified => "submit_unverified",
+            Self::UnverifiedEnter => "unverified_enter",
             Self::Disposed => "disposed",
             Self::WriteFailed => "write_failed",
             Self::Unsupported => "unsupported",
@@ -164,6 +199,43 @@ pub enum ShellFallback {
     PasteInert,
     /// Paste nothing: [`AbortReason::ShellOnly`].
     Fail,
+}
+
+/// What a submit does when the profile cannot read its composer
+/// ([`AgentProfile::pending_input`](super::AgentProfile::pending_input) answers `None`
+/// on every screen of the paste check, as the built-in `opencode` and `cursor` profiles
+/// do). A composer the profile reads even once in that window keeps the verified path,
+/// whatever this says. Also chosen for a reset by
+/// [`reset_with`](super::AgentTerminal::reset_with) and for both halves of
+/// [`reset_and_send`](super::AgentTerminal::reset_and_send).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum UnreadableComposer {
+    /// No Enter: the delivery ends [`AbortReason::SubmitUnverified`] with the text left
+    /// pasted in the composer. Submission needs composer evidence.
+    #[default]
+    Refuse,
+    /// **Best effort, unverified.** After the whole paste-check window
+    /// ([`Timing::submit_verify_window`](super::Timing::submit_verify_window)) without
+    /// a composer reading, wait for fresh output after the paste that then stays quiet
+    /// for [`Timing::paste_echo_quiet`](super::Timing::paste_echo_quiet) (at most
+    /// [`Timing::paste_echo_max`](super::Timing::paste_echo_max)). Check for a question,
+    /// a startup dialog and a still-unreadable composer on the same screen. Revalidate
+    /// that screen after checking foreground ownership (including a strict send's proof)
+    /// and require the same agent lifecycle as the paste before writing **exactly one**
+    /// Enter. A relaunch during verification withholds Enter and any reset follow-up.
+    /// Once the unverified Enter is written, the delivery ends
+    /// [`AbortReason::UnverifiedEnter`]; it is never retried
+    /// ([`Timing::submit_retry_max`](super::Timing::submit_retry_max) does not apply) or
+    /// resent. No output after the paste, or output that never goes quiet, ends
+    /// [`AbortReason::SubmitUnverified`] without an Enter.
+    ///
+    /// Output after the paste is not proof that the paste reached the composer, and
+    /// nothing verifies the Enter: the agent may not have read the paste, may absorb the
+    /// Enter, or may already have changed screens. Choose this only when an unverified
+    /// submission is acceptable, for example for a host that forwards chat messages to an
+    /// agent whose composer no profile can read.
+    EnterOnce,
 }
 
 /// A check right before the paste (the commit point: after the input lull, before the
@@ -209,13 +281,16 @@ impl fmt::Debug for Revalidate {
 }
 
 /// How [`AgentTerminal::send`](super::AgentTerminal::send) delivers. [`Default`]: paste
-/// only, not strict, [`ShellFallback::PasteInert`], no revalidation.
+/// only, not strict, [`ShellFallback::PasteInert`], no revalidation,
+/// [`UnreadableComposer::Refuse`].
 #[derive(Debug, Default)]
 pub struct SendOptions {
     /// Observe the pasted text, press Enter once and verify a readable composer
     /// transition. Extra Enter attempts require opting into
     /// [`Timing::submit_retry_max`](super::Timing::submit_retry_max) and may submit twice
-    /// when the agent redraws late. `false`: queue an editable paste and stop.
+    /// when the agent redraws late. An unreadable composer gets no Enter unless
+    /// [`unreadable_composer`](Self::unreadable_composer) opts into one unverified Enter.
+    /// `false`: queue an editable paste and stop.
     pub submit: bool,
     /// Require proof that the agent owns the terminal at every irreversible step: before
     /// the lull, at the commit point and right before the paste, before every Enter and
@@ -232,6 +307,12 @@ pub struct SendOptions {
     pub on_shell: ShellFallback,
     /// The commit-point check.
     pub revalidate: Revalidate,
+    /// What a submit does when the profile cannot read its composer. The default,
+    /// [`UnreadableComposer::Refuse`], writes no Enter; the opt-in
+    /// [`UnreadableComposer::EnterOnce`] writes one unverified Enter and ends
+    /// [`AbortReason::UnverifiedEnter`]. Ignored without `submit` and whenever the
+    /// profile reads the composer.
+    pub unreadable_composer: UnreadableComposer,
 }
 
 /// A delivery request: its [`TicketId`] and authoritative outcome. Admission refusals
@@ -410,6 +491,7 @@ mod tests {
     #[test]
     fn reasons_have_snake_case_names() {
         assert_eq!(AbortReason::ResetRejected.as_str(), "reset_rejected");
+        assert_eq!(AbortReason::AgentWorking.as_str(), "agent_working");
         assert_eq!(AbortReason::DialogBlocking.as_str(), "dialog_blocking");
         assert_eq!(
             AbortReason::TrustPromptBlocking.as_str(),
@@ -417,9 +499,11 @@ mod tests {
         );
         assert_eq!(AbortReason::NotConnected.to_string(), "not_connected");
         assert_eq!(AbortReason::EmptyText.as_str(), "empty_text");
+        assert_eq!(AbortReason::UnverifiedEnter.as_str(), "unverified_enter");
         let opts = SendOptions::default();
         assert!(!opts.submit && !opts.strict);
         assert_eq!(opts.on_shell, ShellFallback::PasteInert);
+        assert_eq!(opts.unreadable_composer, UnreadableComposer::Refuse);
         assert!(matches!(opts.revalidate, Revalidate::None));
         assert_eq!(
             format!("{:?}", Revalidate::Sync(Box::new(|| true))),

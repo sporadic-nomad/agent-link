@@ -23,7 +23,7 @@ mod native {
     use agent_link::agent::profiles::{CodexProfile, CursorProfile, PiProfile};
     use agent_link::agent::turns::{
         IsolatedTranscriptRoot, TranscriptReceiver, TranscriptSource as Source, TranscriptTurn,
-        TurnGap, TurnOptions, TurnStatus,
+        TurnGap, TurnOptions, TurnRecvError, TurnStatus,
     };
     use agent_link::agent::{AgentProfile, AgentSpec, AgentTerminal};
     use agent_link::{Error, PtySize, SpawnSpec, TerminalIdentity};
@@ -230,6 +230,74 @@ mod native {
         fs::copy(&pb, other).unwrap();
         assert!(b.try_recv().is_none());
         assert_eq!(b.status(), TurnStatus::Gap(TurnGap::Uncorroborated));
+    }
+
+    /// Deadline for one blocking or awaited wait below.
+    const LIMIT: Duration = Duration::from_secs(8);
+
+    fn codex_turn(path: &Path, text: &str) {
+        let lines = CODEX.lines().skip(1).collect::<Vec<_>>();
+        let end = lines[2].replace("Sample confirmed.", text);
+        append(path, &format!("{}\n{}\n{end}\n", lines[0], lines[1]));
+    }
+
+    #[test]
+    fn blocking_waits_follow_binding_replies_and_revocation() {
+        let setup = Setup::new();
+        let (root, lease) = setup.lease("waits");
+        let (_term, reader) = setup.attach(Source::Codex, &lease, TurnOptions::default());
+        assert_eq!(
+            reader.recv_timeout(Duration::ZERO).unwrap_err(),
+            TurnRecvError::Timeout
+        );
+        std::thread::scope(|s| {
+            let bound = s.spawn(|| reader.wait_status_change(TurnStatus::Waiting, LIMIT));
+            let path = setup.codex_header(&root);
+            let status = bound.join().unwrap();
+            assert!(
+                matches!(status, Some(TurnStatus::Active { .. })),
+                "{status:?}"
+            );
+            let next = s.spawn(|| reader.recv_timeout(LIMIT));
+            codex_turn(&path, "waited");
+            assert!(matches!(
+                next.join().unwrap(),
+                Ok(TranscriptTurn::CodexFinal(reply)) if reply.text == "waited"
+            ));
+            let revoked = s.spawn(|| reader.recv_timeout(LIMIT));
+            lease.revoke();
+            assert_eq!(
+                revoked.join().unwrap().unwrap_err(),
+                TurnRecvError::Gap(TurnGap::AuthorityRevoked)
+            );
+        });
+        let gap = TurnStatus::Gap(TurnGap::AuthorityRevoked);
+        assert_eq!(reader.wait_status_change(gap, LIMIT), Some(gap));
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn awaited_waits_follow_binding_replies_and_revocation() {
+        use tokio::time::timeout;
+
+        let setup = Setup::new();
+        let (root, lease) = setup.lease("awaits");
+        let (_term, reader) = setup.attach(Source::Codex, &lease, TurnOptions::default());
+        let path = setup.codex_header(&root);
+        let status = timeout(LIMIT, reader.status_change(TurnStatus::Waiting))
+            .await
+            .unwrap();
+        assert!(matches!(status, TurnStatus::Active { .. }), "{status:?}");
+        codex_turn(&path, "awaited");
+        let turn = timeout(LIMIT, reader.recv()).await.unwrap();
+        assert!(matches!(turn, Ok(TranscriptTurn::CodexFinal(reply)) if reply.text == "awaited"));
+        let (revoked, ()) = tokio::join!(timeout(LIMIT, reader.recv()), async {
+            lease.revoke();
+        });
+        assert_eq!(
+            revoked.unwrap().unwrap_err(),
+            TurnRecvError::Gap(TurnGap::AuthorityRevoked)
+        );
     }
 
     #[test]

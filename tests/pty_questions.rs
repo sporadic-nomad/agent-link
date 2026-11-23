@@ -293,3 +293,128 @@ fn replacing_a_source_discards_its_blocked_poll_before_publishing_the_next_sourc
     let (_, items) = opened(&events);
     assert_eq!(items[0].header, "Color");
 }
+
+/// The built-in Cursor profile, telling each screen read of the question observer (as
+/// `FakeProfile::with_question_reads` does): its first read with the agent in front is the
+/// baseline, so the approval is drawn only after two.
+struct ObservedCursor {
+    cursor: agent_link::agent::profiles::CursorProfile,
+    reads: Sender<()>,
+}
+
+impl agent_link::agent::AgentProfile for ObservedCursor {
+    fn id(&self) -> &str {
+        self.cursor.id()
+    }
+    fn dialog(&self, text: &str) -> Option<agent_link::agent::Dialog> {
+        self.cursor.dialog(text)
+    }
+    fn input_ready(&self, screen: &str) -> bool {
+        self.cursor.input_ready(screen)
+    }
+    fn question_dialog(&self, screen: &str) -> bool {
+        let _ = self.reads.try_send(());
+        self.cursor.question_dialog(screen)
+    }
+    fn question_on_screen(&self, screen: &str) -> Option<PendingQuestion> {
+        self.cursor.question_on_screen(screen)
+    }
+    fn question_shown(&self, screen: &str, pending: &PendingQuestion) -> bool {
+        self.cursor.question_shown(screen, pending)
+    }
+    fn answer_keys(
+        &self,
+        screen: &str,
+        pending: &PendingQuestion,
+        answers: &[Answer],
+    ) -> Result<Vec<agent_link::agent::questions::KeyStep>, AnswerError> {
+        self.cursor.answer_keys(screen, pending, answers)
+    }
+    fn launchers(&self) -> &'static [&'static str] {
+        self.cursor.launchers()
+    }
+    fn launch(
+        &self,
+        perms: &agent_link::agent::Permissions,
+        trust: &TrustPolicy,
+        cwd: &std::path::Path,
+        shell: agent_link::agent::ShellKind,
+    ) -> agent_link::agent::LaunchPlan {
+        self.cursor.launch(perms, trust, cwd, shell)
+    }
+}
+
+/// The built-in Cursor profile reads its shell approval off the screen of a shell-launched
+/// agent: a stand-in `agent` on `PATH` draws Cursor's ready composer, then the recorded
+/// approval layout, and records the key it gets. Relayed, answered with `y`, closed `Host`.
+#[test]
+fn cursor_shell_approval_is_relayed_from_a_shell_launched_agent() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let screen = format!(
+        "{}\r\n $  pwd in /sample\r\n\r\n Run this command?\r\n  \u{2192} Run (once) (y)\r\n    Skip & tell the agent what to do instead (esc or n)\r\n",
+        "\u{2500}".repeat(40)
+    );
+    std::fs::write(home.path().join("screen.txt"), screen).unwrap();
+    let agent = bin.join("agent");
+    std::fs::write(
+        &agent,
+        "#!/bin/sh\n\
+         stty raw -echo\n\
+         printf 'Cursor Agent\\r\\n\\r\\n\\342\\206\\222 Plan, search, build anything\\r\\n'\n\
+         dd bs=1 count=1 of=/dev/null 2>/dev/null\n\
+         printf '\\033[2J\\033[H'\n\
+         cat \"$HOME/screen.txt\"\n\
+         dd bs=1 count=1 of=\"$HOME/received\" 2>/dev/null\n\
+         printf '\\033[2J\\033[Hanswered\\r\\n'\n\
+         dd bs=1 count=1 of=/dev/null 2>/dev/null\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut spec = common::sh_spec(home.path());
+    spec.env
+        .set("PATH", format!("{}:/usr/bin:/bin", bin.to_str().unwrap()));
+    let (tx, reads) = bounded(64);
+    let profile = ObservedCursor {
+        cursor: agent_link::agent::profiles::CursorProfile,
+        reads: tx,
+    };
+    let (term, events) = common::agent::start_agent_shell_spec(
+        spec,
+        AgentSpec {
+            timing: long_window(),
+            trust: TrustPolicy::unattended(),
+            ..AgentSpec::new(Arc::new(profile))
+        },
+    );
+    term.observe_questions().unwrap();
+    ready(&term, &events);
+    while reads.try_recv().is_ok() {}
+    for _ in 0..2 {
+        reads.recv_timeout(WAIT).unwrap();
+    }
+    term.terminal().write(b"!").unwrap();
+    let (qid, items) = opened(&events);
+    assert_eq!(
+        &items[..],
+        [QuestionItem::new(
+            "Run this command?",
+            "pwd in /sample",
+            vec![
+                "Run (once) (y)".into(),
+                "Skip & tell the agent what to do instead (esc or n)".into()
+            ],
+        )]
+    );
+    assert_eq!(
+        term.answer_question(qid, vec![Answer::Choice(0)])
+            .wait(WAIT),
+        Some(Ok(()))
+    );
+    common::screen_contains(term.terminal(), "answered", WAIT);
+    assert_eq!(closed(&events, qid), ClosedBy::Host);
+    assert_eq!(std::fs::read(home.path().join("received")).unwrap(), b"y");
+}

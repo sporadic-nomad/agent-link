@@ -33,6 +33,8 @@ def main():
     run("cargo", "clippy", "--locked", "--workspace", "--all-features", "--all-targets", "--", "-D", "warnings")
     env = os.environ.copy()
     env["RUSTDOCFLAGS"] = (env.get("RUSTDOCFLAGS", "") + " -D warnings").strip()
+    run("cargo", "doc", "--locked", "-p", "agent-link", "--no-deps", env=env)
+    run("cargo", "doc", "--locked", "-p", "agent-link", "--no-deps", "--no-default-features", "--features", "turns", env=env)
     run("cargo", "doc", "--locked", "--workspace", "--no-deps", "--all-features", env=env)
     if not args.skip_tests:
         run("cargo", "test", "--locked", "--workspace", "--all-features", "--no-fail-fast", "--", "--test-threads=1")

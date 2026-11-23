@@ -26,8 +26,8 @@ use agent_link::agent::{
 use agent_link::{Event, ForegroundOwner, PtySize, SpawnSpec};
 use common::agent::{spawn_agent, states_until};
 use common::delivery::{
-    DELIVERY_WAIT, collect_output, fake, long_window, outcome, outcome_where, outcome_with_output,
-    shell, short_window, submit,
+    DELIVERY_WAIT, collect_output, drained_input_log, enter_once, fake, long_window, outcome,
+    outcome_where, outcome_with_output, shell, short_window, submit, unreadable_fake,
 };
 use common::fake::{READY_MARKER, fake_profile, unlaunchable_profile};
 use common::{
@@ -228,6 +228,50 @@ fn a_strict_send_gets_no_enter_after_the_agent_left() {
     states_until(&term, &events, LAUNCH_WAIT, |s, _| s == AgentState::Ready);
     let mut output = String::new();
     let ticket = term.send("; echo PWNED-$((1+1)) ;", strict());
+    assert_eq!(
+        outcome_with_output(&term, &events, &ticket, &mut output),
+        Aborted(AbortReason::ShellOnly)
+    );
+    assert_eq!(term.state(), AgentState::ShellOnly);
+    while let Ok(event) = events.recv_timeout(Duration::from_millis(500)) {
+        collect_output(event, &mut output);
+    }
+    assert!(!output.contains("PWNED-2"), "{output:?}");
+}
+
+/// The opt-in unverified Enter for an unreadable composer keeps the strict proofs: the
+/// running agent gets exactly one Enter (`UnverifiedEnter`, not `Delivered`); an agent
+/// that left without reading the paste gets none — its shell line is interrupted
+/// (`ShellOnly`) and nothing runs.
+#[test]
+fn a_strict_unverified_enter_keeps_its_proofs() {
+    let strict_once = || SendOptions {
+        strict: true,
+        ..enter_once()
+    };
+    let (term, events, home) = unreadable_fake("composer", &[], long_window());
+    let ticket = term.send("a strict message", strict_once());
+    assert_eq!(
+        outcome(&term, &events, &ticket),
+        Aborted(AbortReason::UnverifiedEnter)
+    );
+    screen_contains(term.terminal(), "you: a strict message", WAIT);
+    assert_eq!(
+        drained_input_log(&term, home.path()),
+        b"\x1b[200~a strict message\x1b[201~\r~"
+    );
+
+    let timing = Timing {
+        // By the Enter the shell has the terminal back (see agent_delivery.rs).
+        paste_echo_quiet: Duration::from_millis(1000),
+        paste_echo_max: Duration::from_millis(5000),
+        ..long_window()
+    };
+    let (term, events, _home) = unreadable_fake("composer", &["--exit-on-input"], timing);
+    term.launch().unwrap();
+    states_until(&term, &events, LAUNCH_WAIT, |s, _| s == AgentState::Ready);
+    let mut output = String::new();
+    let ticket = term.send("; echo PWNED-$((1+1)) ;", strict_once());
     assert_eq!(
         outcome_with_output(&term, &events, &ticket, &mut output),
         Aborted(AbortReason::ShellOnly)

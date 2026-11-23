@@ -1,0 +1,5 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Oct 11, 2026, 10:08 PM (UTC)</timestamp>\n<user_query>\nReply with exactly: first answer\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"first answer"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Oct 11, 2026, 10:09 PM (UTC)</timestamp>\n<user_query>\nReply with exactly: second answer\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"second answer"}]}}
+{"type":"turn_ended","status":"success"}

@@ -1,0 +1,8 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Oct 11, 2026, 10:08 PM (UTC)</timestamp>\n<user_query>\nReply with exactly: first answer\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"first answer"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Oct 11, 2026, 10:09 PM (UTC)</timestamp>\n<user_query>\nReply with exactly: second answer\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"second answer"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Oct 11, 2026, 10:09 PM (UTC)</timestamp>\n<user_query>\nRun `ls` in the shell, then reply with exactly: after tool\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I'll run `ls`, then reply exactly as requested."},{"type":"tool_use","name":"Shell","input":{"command":"ls","description":"List workspace directory contents"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"after tool"}]}}
+{"type":"turn_ended","status":"success"}

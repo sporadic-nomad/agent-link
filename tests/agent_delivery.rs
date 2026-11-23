@@ -678,6 +678,8 @@ mod question_redraws {
         PasteVisibility,
         Retry,
         ShellAfterPaste,
+        RelaunchAfterPaste,
+        RelaunchInShell,
     }
 
     struct PausedFake {
@@ -715,11 +717,23 @@ mod question_redraws {
             cwd: &Path,
             shell: ShellKind,
         ) -> LaunchPlan {
-            self.fake.launch(perms, trust, cwd, shell)
+            let mut plan = self.fake.launch(perms, trust, cwd, shell);
+            if self.check == Check::RelaunchInShell {
+                let program = std::mem::replace(&mut plan.program, "launch_peer".into());
+                plan.args.insert(0, program);
+            }
+            plan
         }
 
         fn pending_input(&self, screen: &str, sent: &str) -> Option<bool> {
             let pending = self.fake.pending_input(screen, sent);
+            if matches!(
+                self.check,
+                Check::RelaunchAfterPaste | Check::RelaunchInShell
+            ) && screen.contains(sent)
+            {
+                self.wait_for_redraw();
+            }
             if self.check == Check::PasteVisibility && pending == Some(true) {
                 self.wait_for_redraw();
                 // Keep verification polling. Only a question check inside the loop
@@ -727,6 +741,10 @@ mod question_redraws {
                 return None;
             }
             pending
+        }
+
+        fn reset_command(&self) -> Option<&'static str> {
+            self.fake.reset_command()
         }
 
         fn question_dialog(&self, screen: &str) -> bool {
@@ -854,6 +872,105 @@ mod question_redraws {
         // A surviving comment would swallow this command.
         term.terminal().write(b"echo clean-$((6*7))\n").unwrap();
         screen_contains(term.terminal(), "clean-42", WAIT);
+    }
+
+    fn assert_relaunch_withholds_enter(check: Check, send: impl FnOnce(&AgentTerminal) -> Ticket) {
+        let (entered, reached) = bounded(1);
+        let (resume, resumed) = bounded(1);
+        let mut flags = vec!["--input-log", "input.bin"];
+        let prompt = if check == Check::Retry {
+            flags.extend(["--record-enter", "--ignore-enter"]);
+            ">"
+        } else {
+            flags.push("--unreadable-composer");
+            "┃"
+        };
+        let (term, events, home) = shell(AgentSpec {
+            timing: Timing {
+                submit_retry_max: 1,
+                submit_verify_window: WAIT,
+                ..long_window()
+            },
+            ..AgentSpec::new(Arc::new(PausedFake {
+                fake: FakeProfile::new("composer", &flags),
+                check,
+                reached: entered,
+                resume: resumed,
+            }))
+        });
+        if check == Check::RelaunchInShell {
+            // The shell's own read holds the second launch in the foreground. A Ctrl-C
+            // from the old ticket would cancel it before the replacement can start.
+            term.terminal().write(
+                b"launch_peer() { if [ -f hold ]; then echo waiting-$((20+1)); read -r release || return; fi; \"$@\"; }; echo defined-$((20+1))\n",
+            ).unwrap();
+            screen_contains(term.terminal(), "defined-21", WAIT);
+        }
+        let ticket = send(&term);
+        reached
+            .recv_timeout(DELIVERY_WAIT)
+            .expect("verification reached the requested check");
+        term.interrupt().unwrap();
+        wait_until("shell regained foreground", || {
+            term.terminal().foreground().owner == ForegroundOwner::Shell
+        });
+        // Each process gets a separate raw input log. Only the first received the paste.
+        let log = home.path().join("input.bin");
+        std::fs::rename(&log, home.path().join("first.bin")).unwrap();
+        if check == Check::RelaunchInShell {
+            std::fs::write(home.path().join("hold"), []).unwrap();
+        }
+        term.launch().unwrap();
+        if check == Check::RelaunchInShell {
+            screen_contains(term.terminal(), "waiting-21", WAIT);
+            assert_eq!(term.terminal().foreground().owner, ForegroundOwner::Shell);
+        } else {
+            wait_until("replacement opened its input log", || log.exists());
+            wait_screen(term.terminal(), WAIT, |s| {
+                s.text().contains(READY_MARKER) && s.rows.iter().any(|row| row.trim() == prompt)
+            });
+        }
+        drop(resume);
+        let result = outcome(&term, &events, &ticket);
+        assert_eq!(result, Aborted(AbortReason::SubmitUnverified));
+        if check == Check::RelaunchInShell {
+            assert_ne!(term.state(), AgentState::ShellOnly);
+            term.terminal().write(b"release\n").unwrap();
+            wait_until("replacement completed the launch", || log.exists());
+        }
+        assert_eq!(
+            common::delivery::drained_input_log(&term, home.path()),
+            b"~",
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn a_stale_reset_cannot_interrupt_a_replacement_launch_at_the_shell() {
+        assert_relaunch_withholds_enter(Check::RelaunchInShell, |term| {
+            term.reset_and_send("follow-up payload", common::delivery::enter_once())
+        });
+    }
+
+    #[test]
+    fn a_relaunch_after_paste_withholds_the_unverified_enter() {
+        assert_relaunch_withholds_enter(Check::RelaunchAfterPaste, |term| {
+            term.send("first agent only", common::delivery::enter_once())
+        });
+    }
+
+    #[test]
+    fn a_relaunch_after_paste_withholds_the_reset_enter_and_follow_up() {
+        assert_relaunch_withholds_enter(Check::RelaunchAfterPaste, |term| {
+            term.reset_and_send("follow-up payload", common::delivery::enter_once())
+        });
+    }
+
+    #[test]
+    fn a_relaunch_after_paste_withholds_a_verified_submit_retry() {
+        assert_relaunch_withholds_enter(Check::Retry, |term| {
+            term.send("first agent only", submit())
+        });
     }
 }
 
@@ -1606,6 +1723,126 @@ mod verified_receipts {
             );
             assert_eq!(count_rows(&term, "enter-received"), 1);
             assert_eq!(count_rows(&term, "> uncertain receipt"), 1);
+        }
+    }
+}
+
+/// `SendOptions::unreadable_composer` against the fake drawing its composer without a
+/// prompt marker (`--unreadable-composer`: the default pending-input rule cannot read
+/// it, as for opencode). The raw input log counts the Enters.
+mod unreadable_composer {
+    use super::*;
+    use common::delivery::{drained_input_log, enter_once, unreadable_fake};
+    use common::fake::QUESTION_FOOTER;
+
+    /// The log of one `hello there` paste followed by `rest`.
+    fn pasted(rest: &[u8]) -> Vec<u8> {
+        [&b"\x1b[200~hello there\x1b[201~"[..], rest].concat()
+    }
+
+    /// The default (pinned): no Enter, `SubmitUnverified`, the text left in the composer.
+    #[test]
+    fn the_default_writes_no_enter() {
+        let (term, events, home) = unreadable_fake("composer", &[], long_window());
+        let ticket = term.send("hello there", submit());
+        assert_eq!(
+            outcome(&term, &events, &ticket),
+            Aborted(AbortReason::SubmitUnverified)
+        );
+        screen_contains(term.terminal(), "┃ hello there", WAIT);
+        assert!(!rows(&term).iter().any(|r| r.starts_with("you:")));
+        assert_eq!(drained_input_log(&term, home.path()), pasted(b"~"));
+    }
+
+    /// The opt-in: exactly one Enter and `UnverifiedEnter`, never `Delivered` — whether
+    /// the fake submits on it or ignores it, with retries configured all the same.
+    #[test]
+    fn the_opt_in_writes_exactly_one_unverified_enter() {
+        for ignore_enter in [false, true] {
+            let mut flags = vec!["--record-enter"];
+            if ignore_enter {
+                flags.push("--ignore-enter");
+            }
+            let timing = Timing {
+                submit_retry_max: 3,
+                ..long_window()
+            };
+            let (term, events, home) = unreadable_fake("composer", &flags, timing);
+            let ticket = term.send("hello there", enter_once());
+            assert_eq!(
+                outcome(&term, &events, &ticket),
+                Aborted(AbortReason::UnverifiedEnter),
+                "ignore_enter {ignore_enter}"
+            );
+            if ignore_enter {
+                screen_contains(term.terminal(), "enter-received", WAIT);
+                assert_eq!(count_rows(&term, "┃ hello there"), 1);
+            } else {
+                screen_contains(term.terminal(), "agent: ok #1", WAIT);
+                assert_eq!(count_rows(&term, "you: hello there"), 1);
+            }
+            assert_eq!(drained_input_log(&term, home.path()), pasted(b"\r~"));
+            assert_eq!(count_rows(&term, "enter-received"), 1);
+        }
+    }
+
+    /// A composer the profile reads keeps the verified path under the opt-in: a submit
+    /// it sees leave is `Delivered`; one still in the composer after its Enter is
+    /// `SubmitUnverified` without a retry — never `UnverifiedEnter`.
+    #[test]
+    fn a_readable_composer_keeps_the_verified_path() {
+        for ignore_enter in [false, true] {
+            let mut flags = vec!["--input-log", "input.bin"];
+            if ignore_enter {
+                flags.push("--ignore-enter");
+            }
+            let (term, events, home) = fake("composer", &flags);
+            let ticket = term.send("hello there", enter_once());
+            let expected = if ignore_enter {
+                Aborted(AbortReason::SubmitUnverified)
+            } else {
+                Delivered
+            };
+            assert_eq!(outcome(&term, &events, &ticket), expected);
+            assert_eq!(drained_input_log(&term, home.path()), pasted(b"\r~"));
+        }
+    }
+
+    /// A question the paste opened takes no Enter.
+    #[test]
+    fn a_question_on_screen_gets_no_enter() {
+        let (term, events, home) = unreadable_fake("question-on-paste", &[], long_window());
+        let ticket = term.send("hello there", enter_once());
+        assert_eq!(
+            outcome(&term, &events, &ticket),
+            Aborted(AbortReason::DialogBlocking)
+        );
+        screen_contains(term.terminal(), QUESTION_FOOTER, WAIT);
+        answer_question(term.terminal());
+        assert_eq!(
+            std::fs::read(home.path().join("input.bin")).unwrap(),
+            pasted(b"1")
+        );
+    }
+
+    /// No output after the paste (`--silent-paste`), or output that never goes quiet (a
+    /// title every 100 ms): no Enter, `SubmitUnverified`.
+    #[test]
+    fn a_paste_without_a_quiet_echo_gets_no_enter() {
+        for flag in ["--silent-paste", "--background-title"] {
+            let (term, events, home) = unreadable_fake("composer", &[flag], long_window());
+            let ticket = term.send("hello there", enter_once());
+            assert_eq!(
+                outcome(&term, &events, &ticket),
+                Aborted(AbortReason::SubmitUnverified),
+                "{flag}"
+            );
+            assert_eq!(
+                drained_input_log(&term, home.path()),
+                pasted(b"~"),
+                "{flag}"
+            );
+            assert!(!rows(&term).iter().any(|r| r.starts_with("you:")), "{flag}");
         }
     }
 }

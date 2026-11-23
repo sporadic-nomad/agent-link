@@ -59,7 +59,7 @@ pub(crate) const AFTER_EXIT: usize = 16;
 pub(crate) struct EventBus {
     id: SessionId,
     /// Reader EOF and observed process exit cut off turn observation before Exit fanout.
-    #[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
+    #[cfg(all(feature = "agent", any(test, feature = "turns")))]
     pub(super) turns_ended: Arc<AtomicBool>,
     state: Mutex<BusState>,
     /// Serializes model processing + output logging, resize, and recovery attachment.
@@ -137,7 +137,7 @@ impl EventBus {
         let (closed_tx, closed_rx) = bounded(0);
         Self {
             id,
-            #[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
+            #[cfg(all(feature = "agent", any(test, feature = "turns")))]
             turns_ended: Arc::new(AtomicBool::new(false)),
             state: Mutex::new(BusState {
                 subscribers: Vec::new(),
@@ -367,7 +367,7 @@ impl EventBus {
     /// Publishes an event that is not output. An `Exit` is also kept for later receivers;
     /// after it only an agent controller publishes.
     pub(crate) fn publish(&self, event: Event) {
-        #[cfg(all(unix, feature = "agent", any(test, feature = "turns")))]
+        #[cfg(all(feature = "agent", any(test, feature = "turns")))]
         if matches!(event, Event::Exit { .. }) {
             self.turns_ended.store(true, Ordering::Release);
         }

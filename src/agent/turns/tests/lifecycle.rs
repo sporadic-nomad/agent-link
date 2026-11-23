@@ -556,6 +556,26 @@ fn an_exited_child_cuts_off_a_queue_even_if_reader_fanout_cannot_reach_eof() {
     });
 }
 
+#[cfg(feature = "turns")]
+#[test]
+fn confirmed_child_exit_refuses_ambient_attachment_before_monitor_exit() {
+    use crate::agent::profiles::CursorProfile;
+
+    let (_lock, home) = project();
+    let peer = Peer::start(home.path(), "ambient-exit", false, None);
+    with_undelivered_exit(peer.term.terminal(), peer.events, || {
+        assert!(peer.term.terminal().try_wait().is_some());
+        assert_ne!(peer.term.state(), AgentState::Exited);
+        let source = CursorProfile.ambient_turns_with_unseparated_text();
+        assert_eq!(
+            peer.term
+                .attach_ambient_turns_with(source, ambient::AmbientOptions::default())
+                .unwrap_err(),
+            AttachError::NoLaunch
+        );
+    });
+}
+
 #[test]
 fn pulling_with_the_worker_paused_detects_child_exit_before_eof() {
     with_blocked_fanout_after_exit(|rx, _| {

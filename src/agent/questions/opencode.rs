@@ -5,14 +5,17 @@
 //! or reconnects to a port after the server exits. The host supplies the same workspace
 //! directory and session ID as its TUI, and revokes the feed before changing that binding.
 //! Only the question list and reply routes are used.
-
-mod wire;
+//!
+//! [`OpenCodeAmbientQuestions`] reads the same routes, best effort, from the TUI's own
+//! server of a terminal spawned with
+//! [`spawn_with_ambient_feed`](crate::agent::AgentTerminal::spawn_with_ambient_feed).
 
 use std::collections::HashSet;
 use std::net::{Shutdown, TcpStream};
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -23,10 +26,17 @@ use super::{
     Answer, AnswerError, MAX_FEED_QUESTIONS, MAX_FIELD, MAX_OPTIONS, MAX_QUESTION_BYTES,
     MAX_QUESTIONS, PendingQuestion, QuestionFeed, QuestionItem,
 };
+use crate::agent::loopback::Connection;
 use crate::{Error, Result};
-use wire::Connection;
+
+mod ambient;
+pub use ambient::OpenCodeAmbientQuestions;
 
 const MAX_ID: usize = 128;
+
+fn question_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(3)
+}
 
 /// Host-bound, revocable OpenCode 1.x question feed. A single socket serializes polling
 /// and answers. The caller can put it in an `Arc` to retain the revocation handle.
@@ -110,7 +120,11 @@ impl OpenCodeQuestions {
             return Err(AnswerError::NotOpen);
         }
         let (status, data) = io
-            .exchange(&format!("/question{}", self.query), None)
+            .exchange(
+                &format!("/question{}", self.query),
+                None,
+                question_deadline(),
+            )
             .map_err(|_| {
                 self.revoke();
                 AnswerError::Io
@@ -159,7 +173,7 @@ impl QuestionFeed for OpenCodeQuestions {
             return Err(AnswerError::NotOpen);
         }
         let path = format!("/question/{}/reply{}", pending.id, self.query);
-        match connection.exchange(&path, Some(&payload)) {
+        match connection.exchange(&path, Some(&payload), question_deadline()) {
             Ok((200, body)) if matches!(serde_json::from_slice::<bool>(&body), Ok(true)) => Ok(()),
             Ok((404, _)) => Err(AnswerError::NotOpen),
             _ => {
@@ -259,6 +273,7 @@ impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for List<T, N> {
     }
 }
 
+/// Validate every row's request and session IDs, keeping questions for the bound session.
 fn parse_pending(
     data: &[u8],
     session: &str,

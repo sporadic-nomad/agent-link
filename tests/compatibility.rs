@@ -78,6 +78,36 @@ fn question_recognition_names_the_recorded_layout_for_each_builtin() {
 }
 
 #[test]
+fn the_opencode_model_flag_is_a_declaration_and_only_its_argv_is_tested() {
+    let metadata = ProfileRegistry::builtin()
+        .get("opencode")
+        .unwrap()
+        .compatibility();
+    let record = |operation| {
+        metadata
+            .evidence
+            .iter()
+            .find(|e| e.operation == operation)
+            .unwrap()
+    };
+    let flag = record("PTY model flag in the default TUI command");
+    assert_eq!(flag.kind, EvidenceKind::Declaration);
+    assert_eq!(flag.cli_version, Some("1.18.21"));
+    assert_eq!(flag.platform, None);
+    // The cited manual keeps the caveat with the version.
+    let manual =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(flag.source)).unwrap();
+    let manual = manual.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(manual.contains(
+        "listed by opencode 1.18.21's TUI help per prior measurement; \
+         not re-recorded here; opencode 2.x not covered"
+    ));
+    let argv = record("PTY model and effort argv construction");
+    assert_eq!(argv.kind, EvidenceKind::SyntheticFixture);
+    assert_eq!(argv.cli_version, None);
+}
+
+#[test]
 fn claude_writer_binding_and_final_reply_evidence_match_the_paired_capture() {
     const SOURCE: &str = "tests/fixtures/transcripts/claude-2.1.296/capture.json";
     let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SOURCE);
@@ -133,6 +163,73 @@ fn claude_writer_binding_and_final_reply_evidence_match_the_paired_capture() {
             Some(data.lines().count() as u64)
         );
     }
+}
+
+/// Each built-in CLI source's best-effort ambient evidence: the captures its parser
+/// replays, each recording the version declared, and the offline lookup tests. Nothing
+/// claims a live check of the ambient tier.
+#[cfg(feature = "turns")]
+#[test]
+fn ambient_evidence_names_its_captures_and_their_recorded_versions() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let registry = ProfileRegistry::builtin();
+    for id in ["claude", "codex", "pi", "cursor"] {
+        let profile = registry.get(id).unwrap();
+        assert!(profile.ambient_turns().is_some(), "{id}");
+        let metadata = profile.compatibility();
+        let ambient: Vec<_> = metadata
+            .evidence
+            .iter()
+            .filter(|e| e.operation.starts_with("best-effort ambient"))
+            .collect();
+        assert!(
+            ambient
+                .iter()
+                .any(|e| e.kind == EvidenceKind::SyntheticFixture
+                    && e.source == "tests/ambient_sources.rs"
+                    && e.cli_version.is_none()),
+            "{id}: offline lookup evidence"
+        );
+        let captures: Vec<_> = ambient
+            .iter()
+            .filter(|e| e.kind != EvidenceKind::SyntheticFixture)
+            .collect();
+        assert!(
+            captures.len() >= 2,
+            "{id}: its own capture and the controlled one"
+        );
+        for evidence in captures {
+            let version = evidence.cli_version.expect("a recorded CLI version");
+            let record = std::fs::read_to_string(root.join(evidence.source)).unwrap();
+            assert!(
+                record.contains(version),
+                "{id}: {} does not record CLI version {version}",
+                evidence.source
+            );
+            if let Some(dir) = evidence
+                .source
+                .strip_prefix("tests/fixtures/transcripts/ambient/")
+            {
+                assert!(dir.starts_with(&format!("{id}-{version}/")), "{id}: {dir}");
+            }
+        }
+    }
+    let opencode = registry.get("opencode").unwrap();
+    // OpenCode writes no transcript: it has a feed, declared and tested against a scripted
+    // server only, and no captured or live ambient evidence.
+    assert!(opencode.ambient_turns().is_none());
+    assert!(opencode.ambient_feed().is_some());
+    let metadata = opencode.compatibility();
+    let ambient: Vec<_> = metadata
+        .evidence
+        .iter()
+        .filter(|e| e.operation.contains("ambient"))
+        .collect();
+    assert!(!ambient.is_empty());
+    assert!(ambient.iter().all(|e| matches!(
+        e.kind,
+        EvidenceKind::Declaration | EvidenceKind::SyntheticFixture
+    )));
 }
 
 #[cfg(feature = "codex")]

@@ -6,6 +6,226 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-11-23
+
+### Added
+
+- `turns` adds a best-effort ("ambient") observation tier, `agent::turns::ambient`, for
+  any `AgentTerminal`: shell or direct spawn, Unix and Windows, no lease, isolated root,
+  version pin or launch budget. It provides **no writer exclusion and no attribution
+  guarantee**; replies are what the CLI's own transcript says ended a turn.
+  `AgentTerminal::attach_ambient_turns` uses the new `AgentProfile::ambient_turns` hook
+  (default `None` for custom profiles) and
+  `attach_ambient_turns_with` takes a host `AmbientSource`/`AmbientParser`. The pull
+  `AmbientReceiver` reports `AmbientEvidence` per turn (explicit end, next record, quiet
+  window, transcript end) and typed `AmbientStatus` waiting, active and closed states.
+  Reading starts from now and survives rewrites, replacement and session switches. Byte,
+  record, reply and queue bounds reuse `TurnOptions`; a full queue closes with
+  `Overflow`. One worker per attachment, at most `ambient_worker_limit()` (default 64)
+  per process, independent of the controlled tier. `AttachError::NoAmbientSource` is new.
+  [Guide](docs/pty-ambient-turns.md)
+- Built-in best-effort ambient sources: `ClaudeProfile`, `CodexProfile`, `PiProfile` and
+  `CursorProfile` now return one from `AgentProfile::ambient_turns`, so
+  `AgentTerminal::attach_ambient_turns` works for their terminals on the user's own
+  configuration directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+  `PI_CODING_AGENT_SESSION_DIR`/`PI_CODING_AGENT_DIR`, `CURSOR_DATA_DIR`, else the home
+  defaults) with no version pin. Claude and Codex end turns explicitly; Pi's ends are
+  inferred (next prompt or quiet). Cursor reports successful ends **without text** by
+  default, like the controlled tier; the new
+  `CursorProfile::ambient_turns_with_unseparated_text` opts in to its text, which can mix
+  reasoning with the answer. Lookups skip print, SDK, `exec`, app-server and subagent
+  sessions, stay under the resolved root and are bounded per wake. Each profile's
+  `compatibility()` declares the recorded fixtures it was tested against (Claude 2.1.296,
+  Codex 0.154.0, Pi 0.85.1 and 1.5.2, Cursor 2026.10.01 and 2026.11.13-eacade1); no
+  live check. [Guide](docs/pty-ambient-turns.md#built-in-sources)
+- The ambient tier can poll a feed instead of tailing a file: `AmbientFeed` /
+  `AmbientFeedReader` (one reader per agent launch, a two-second budget per poll),
+  `AgentProfile::ambient_feed` (used by `attach_ambient_turns` when a profile has no
+  transcript source), `AgentTerminal::attach_ambient_feed_with`, and
+  `AmbientUnavailable::Feed(AmbientFeedUnavailable)` with typed reasons. The receiver,
+  evidence, limits, worker budget and lifecycle are unchanged.
+- OpenCode best-effort replies from its TUI's server. The new opt-in
+  `AgentTerminal::spawn_with_ambient_feed` calls the new
+  `AgentProfile::ambient_feed_launch` hook. OpenCode's adds `--port <free loopback port>
+  --hostname 127.0.0.1` and a fresh 32-hex-digit `OPENCODE_SERVER_PASSWORD` from OS
+  randomness. Ordinary spawns are unchanged. In a shell spawn every process the shell
+  starts inherits the password.
+  - The feed sends the password only on a connection whose server end it found held by
+    the launched agent's process (`libproc` on macOS, `/proc` on Linux,
+    `GetExtendedTcpTable` on Windows). A port squatter is sent nothing; an unprotected
+    or refusing server ends the launch's feed.
+  - Shapes follow OpenCode 1.18.21 as declared, tested only against a synthetic server;
+    OpenCode 2.x is not covered.
+  - `turns` now depends on `httparse`, `base64` and `getrandom` 0.4; Windows builds
+    enable `windows-sys`'s `Win32_NetworkManagement_IpHelper`.
+  - The OpenCode question client's HTTP code moved, unchanged, to a module both
+    features share.
+  [Guide](docs/pty-ambient-turns.md#opencode)
+- `questions` gains best-effort question sources for the ambient tier, for a desktop host
+  that runs the CLIs in the user's own shell and configuration on any platform.
+  - `AgentTerminal::observe_ambient_transcript_questions(&AmbientReceiver)` relays the
+    questions a transcript attachment shows (Claude `AskUserQuestion`, Codex Plan-mode
+    `request_user_input`) through the existing question events, book, limits and answer
+    keys, only while the terminal's screen shows the same question. A call counts only
+    after a prompt the attachment read; copied history, rewrites, oversized lines, the
+    receiver's stop or drop and a new launch withdraw it. Evidence is weaker than the
+    controlled tier's: no writer exclusion, attribution or version pin; the on-screen
+    dialog is what makes a relayed question this terminal's.
+  - The new defaulted `AmbientParser::question` hook returns `AmbientQuestion::{Asked,
+    Answered, Withdrawn}`; the built-in Claude and Codex sources implement it with the
+    controlled tier's record parser, which now compiles on every platform.
+  - `agent::questions::opencode::OpenCodeAmbientQuestions` is a `QuestionFeed` for an
+    OpenCode TUI launched with `spawn_with_ambient_feed`: it lists and answers its own
+    server's pending question requests with the ambient feed's endpoint, credentials and
+    server-owner check (before every new connection, the answer's included). Pass the displayed root
+    session ID to `OpenCodeAmbientQuestions::new(&term, session_id)` and stop observation
+    before switching sessions. Both list and answer revalidation filter by that ID.
+  - Tested offline on macOS arm64 against recorded transcripts, the fake agent's question
+    dialog and a synthetic OpenCode-like server; no real CLI was observed, and Linux and
+    Windows runtime behavior is unverified.
+  [Guide](docs/agents-and-delivery.md#best-effort-ambient-questions)
+- `turns`: `TurnReceiver` and `TranscriptReceiver` gain `recv_timeout` and
+  `wait_status_change`, and with `tokio` the cancel-safe `recv` and `status_change`, so
+  hosts no longer poll on a timer. `TurnRecvError` distinguishes a timeout from the gap
+  or closure that ended observation. Publication, gaps, `stop()` and terminal teardown wake
+  waiters at once. Lease revocation, child exit, launch changes and monitor loss are
+  sampled by the worker's next 50 ms pass. `try_recv`, `status` and their checks are
+  unchanged. [Guide](docs/agents-and-delivery.md#waiting-on-a-turn-receiver)
+- `turns`: the best-effort `AmbientReceiver` gains the same waits, `recv_timeout` and
+  `wait_status_change`, and with `tokio` the cancel-safe `recv` and `status_change`, so a
+  host with many terminals needs no timer loop per receiver. The new
+  `ambient::AmbientRecvError` has `Timeout` and `Closed(AmbientClosed)`; the controlled
+  tier's `TurnRecvError` is not reused because ambient observation has no gap and keeps
+  the turns queued before a close (other than `stop()`), which a receive returns before
+  `Closed`. Publication, a published status change (a waiting reason or a feed's state
+  included), a close, `stop()` and terminal teardown wake waiters at once; what the worker
+  samples (launches, departures, child exit, monitor loss, new lines) at its next wake.
+  `try_recv`, `status`, `stop`, the bounds and the worker are unchanged.
+  [Guide](docs/pty-ambient-turns.md#waiting-instead-of-polling)
+- Opt-in reset turn gate: a nonzero `Timing::reset_turn_wait` holds `reset()` and the
+  reset step of `reset_and_send()` while the agent's activity is `Working`, bounded in
+  total by that value, before the reset command is typed. A turn that outlasts the
+  bound ends with the new `AbortReason::AgentWorking` (`agent_working`) and nothing
+  typed. While waiting, the job reads the foreground every 250 ms. A departed agent
+  is relaunched, another foreground program gives `ForegroundUnproven` and a recognized
+  question gives `DialogBlocking`. Teardown and session end stop the wait at once.
+  Activity is heuristic (a Braille title spinner or OSC 9;4 progress; among the built-in
+  profiles only Codex has a recorded spinner): the gate makes a reset typed into a
+  running turn less likely without proving the turn ended, and `reset_rejected` checks
+  still apply. Tested offline with the scripted fake agent only.
+  [Guide](docs/agents-and-delivery.md#waiting-for-a-running-turn-opt-in)
+- `SendOptions::unreadable_composer` and `agent::UnreadableComposer` add an explicit,
+  per-send opt-in for profiles that cannot read their composer. The built-in OpenCode
+  and Cursor profiles are examples. The default `Refuse` keeps the current
+  behavior: no Enter and `SubmitUnverified`. With `EnterOnce`, the profile must find no
+  readable composer during the whole paste check. Fresh output after the paste must then
+  go quiet. Delivery rechecks composer readability alongside questions and startup dialogs.
+  An ordinary send that now finds a readable composer on the agent's screen ends with
+  `SubmitUnverified` and withholds Enter. If the composer is still unreadable and the
+  foreground check passes, delivery writes exactly one Enter without composer evidence.
+  It never retries that Enter, even with `submit_retry_max`. The delivery ends
+  with the new `AbortReason::UnverifiedEnter`
+  (`unverified_enter`), never `Delivered`. A readable composer keeps the verified path.
+  Without quiet output after the paste, the delivery still ends `SubmitUnverified` with
+  no Enter. Do not resend `UnverifiedEnter` automatically, because the message may
+  already have been submitted.
+  [Guide](docs/agents-and-delivery.md#unreadable-composers-opt-in)
+- `AgentTerminal::reset_with(UnreadableComposer)` applies the opt-in to `reset()`.
+  `reset_and_send` applies the caller's `unreadable_composer` to both halves. After
+  an unverified reset Enter, refusal checks still run. The follow-up is pasted only if
+  fresh output settles after that Enter. Otherwise it is withheld with
+  `SubmitUnverified`. A compound job with an unverified reset never reports
+  `Delivered`. Its follow-up can still reach the old conversation.
+- The opt-in has offline fake-agent coverage only. No live OpenCode or Cursor run
+  establishes that the unverified Enter submits a message.
+
+### Changed
+
+- The built-in OpenCode profile maps an explicit PTY `ModelChoice` without an effort
+  to `-m <id>` instead of returning `Error::Unsupported`. The TUI command has no effort
+  option, so a choice with an effort is still refused with `Error::Unsupported`, never
+  launched without it. Base arguments that already select a model return
+  `Error::InvalidInput`. The flag is declared from a prior opencode 1.18.21 help
+  listing that is not recorded in this repository; its compatibility record is a
+  `Declaration`, and opencode 2.x is not covered. Hosts that relied on the refusal to
+  hide a model picker for OpenCode now get a launch with the selected model.
+- `Timing` has the new field `reset_turn_wait` (default `Duration::ZERO`, off: resets
+  behave as in 0.3.0). Exhaustive `Timing` literals must add `reset_turn_wait:
+  Duration::ZERO`; struct update syntax (`..Timing::default()`) inherits it.
+- `SendOptions` has a new public field. Exhaustive `SendOptions` literals must add
+  `unreadable_composer: UnreadableComposer::Refuse` to keep the previous behavior.
+  `SendOptions::default()` and struct update syntax inherit that default.
+  `AbortReason` is `#[non_exhaustive]`, so the new `UnverifiedEnter` variant does not
+  break matches. Hosts that map reasons to their own states should still handle it
+  explicitly. `DeliveryOutcome` is unchanged.
+
+### Fixed
+
+- Ambient OpenCode completions use assistant `parentID` and tool follow-up state;
+  queued prompts and tool steps with `finish: "stop"` no longer publish narration as a
+  final reply. Provider-executed tools and interrupted cleanup errors retain their
+  completion exceptions.
+- Ambient observation resumes from fresh positions when a suspended shell agent's
+  identified process group regains the foreground, without requiring a relaunch.
+- Terminal closure reconciles the latest launch before the final transcript lookup,
+  recovering eligible replies from replacements that started and ended between polls,
+  including when the terminal was dropped.
+
+- An ambient transcript that shrinks during its initial scan uses the observed shorter EOF as its baseline, so later appends can report turns before the file regains its original size. OpenCode processes session lists, status maps and message parts incrementally within the existing response caps.
+- Ambient transcript readers compare conversation prefixes across files. Independent sessions keep their replies when a later reply and end marker match. Sources can identify a replaceable session header with `AmbientSource::is_session_header`.
+- A departing shell launch leaves transcripts created by its replacement to the new launch. Ambient attachment returns `NoLaunch` as soon as the PTY records child exit, even while the controller is waiting for EOF.
+- The reset turn gate discards foreground evidence collected before a relaunch. OpenCode ambient feed launches that enable `--mini` return `InvalidInput` before spawning.
+- Final ambient transcript reads check the captured file identity and revision. A replacement or a detected same-length rewrite after EOF capture reports `IncompleteDrain`. Repeated notifications during an empty turn-receiver pull now respect the original timeout.
+- Cursor discards pending reply text and completion evidence after an unreadable turn record. OpenCode retries a session lookup when its response names a different session.
+
+- OpenCode auto-compaction keeps intermediate tool steps, synthetic continuations and overflow replays within the original prompt.
+- OpenCode retries a trailing reply when an idle notification precedes the status update and checks the latest message ID before publishing.
+- Ambient transcript readers discard pending reply text when a rewrite loses its anchor. Codex and Pi reuse the decoded header across passes over the same file version.
+- An expired reset turn wait skips the foreground and question poll and returns `AgentWorking` if the agent is still working.
+
+- On macOS, OpenCode checks the accepted socket holder’s process group after matching its descriptor.
+- Ambient readers distinguish repeated Cursor replies across history-preserving rewrites, follow Codex rollouts beyond the date discovery window, and drain a session selected between the final poll and exit.
+- Ambient Claude question relay requires nonblank user prompt text. Ambient queue admission compacts reply strings from custom parsers and feeds before charging their retained capacity. Ambient question observers also discard spare capacity in validated question strings and vectors.
+
+- Ambient observers withhold quiet and departure inference while a transcript line is incomplete. Claude drops the preceding reply when a newer non-meta assistant record lacks a content array. After overflow, the worker releases its slot without waiting for the next poll, and queued turns remain available.
+- Cursor remembers observed unsuccessful ends across transcript rewrites, including when metadata replaces the end marker before the next prompt. Ambient readers capture an empty file’s baseline at discovery and report `IncompleteDrain` if an observed file disappears before departure completes.
+- OpenCode reports `IncompleteDrain` when final fetch retries run out. Its question observer stops on a redirect, 404, or 410 from the initial probe, and Windows server-owner checks honor the deadline during socket and process enumeration.
+
+- A relaunch after Enter now gives `SubmitUnverified` while an ordinary send is waiting for its receipt.
+- Ambient transcript eviction retains the bytes preceding the consumed offset. A changed suffix on reopen moves the baseline to EOF. On exit, a final lookup can recover a first transcript created between polls.
+- OpenCode final polls reuse verified connections and report `IncompleteDrain` when a pending request requires a new one. Completed turns remain available.
+- Cursor’s opt-in ambient text retains an empty, truncated reply when the byte limit cuts off its first character.
+
+- Ambient project lookups use filesystem directory identity. New transcript scans start at EOF when the bounded history cannot establish freshness.
+- OpenCode verifies the trailing prompt against a current idle state and enforces the SSE record budget within each socket read. Final ambient feed pages share one deadline and report `IncompleteDrain` when pages remain.
+
+- PTY sends and resets bind each pending Enter to the agent lifecycle recorded with the paste.
+  A host relaunch before Enter withholds that key, including retries and the `EnterOnce` opt-in.
+  A relaunch between a reset follow-up's final check and its paste also withholds the follow-up.
+- Sends and standalone resets repeat their pre-paste checks if a host relaunch races
+  the paste. After a paste, shell cleanup checks the launch before queueing Ctrl-C
+  and before marking the agent gone.
+- OpenCode's Windows socket-owner check verifies each parent using process handles and creation
+  times. An unverifiable parent link leaves the connection unauthenticated.
+- Pi keeps inferred replies tied to their originating record across metadata and forks. Pi and Cursor now account for tool calls beyond the retained content blocks.
+- Codex and Pi discover symlinked transcripts by the target’s modification time and recheck transcript identity after replacement. Switching to a listed transcript preserves turns appended across a partial line.
+- OpenCode returns completed turns in session order across polls, rejects feed launch plans containing `--` before spawn, and observes the owner-check deadline during macOS and Linux scans.
+- The `turns`-only rustdoc build resolves the ambient receiver documentation with warnings denied.
+- A readable composer in the final `EnterOnce` check aborts a reset with `SubmitUnverified` and withholds its follow-up.
+- OpenCode requires completion evidence before publishing a message ID. On Linux, an inconclusive server-owner scan remains retryable.
+- Ambient transcript readers drain through the observed EOF on departure and report `IncompleteDrain` on failure. Replayed prompts cannot authorize Claude or Codex questions, and an oversized line discards the pending reply candidate.
+- Direct launches timestamp transcript lookups before child creation so early Claude session records stay eligible.
+- The default-feature profile documentation builds with broken links denied.
+- `UnreadableComposer::EnterOnce` checks the paste quiet interval on the final screen revision for both sends and resets.
+- OpenCode authentication probes classify the response head and close the socket. An unauthenticated success or an authenticated 401 or 403 ends the turn feed for that launch, even when the response body stalls or exceeds the size limit.
+- A transcript rewrite during the initial baseline scan now resumes from the rewritten EOF. Ambient readers enforce the attachment’s item and byte limits from reply staging through dequeue.
+- Controlled turn receivers release the pull lock before waking async consumers on dequeue or gap detection.
+- Opt-in resets recheck activity under the terminal writer lock. A turn that resumes while the reset waits for another writer uses the reset’s remaining wait time.
+- Ambient transcript readers reject special files. The per-launch directory scan counts every entry, and saved offsets stay bounded when transcripts are evicted.
+- The OpenCode turn feed drops retry counts with evicted idle sessions. Its ambient question feed uses one three-second deadline to read the pending list and look up the bound session during polling or answer revalidation.
+- Transcript rewrites can insert metadata before a reported end marker without publishing the completion twice.
+- Claude, Codex and Pi distinguish an incomplete lookup with `AmbientUnavailable::ReadBudgetExceeded`. Codex and Pi charge buffered header read-ahead against the lookup budget.
+
 ## [0.3.0] — 2026-11-19
 
 ### Added

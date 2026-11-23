@@ -2,24 +2,29 @@
 //!
 //! Composer submission evidence has not been measured for the supplied profile. An
 //! unreadable composer returns `SubmitUnverified`; use measured profile support or
-//! the structured RPC transport when verified delivery is required.
+//! the structured RPC transport when verified delivery is required. A host that accepts
+//! unverified submission can opt into `UnreadableComposer::EnterOnce`: one Enter without
+//! composer evidence, reported as `UnverifiedEnter` (not measured against opencode).
 //!
 //! | | opencode |
 //! |---|---|
 //! | `launchers()` | `opencode` |
 //! | `launch()` | `opencode`; unattended: env default [`OPENCODE_PERMISSION_ENV`]`=`[`OPENCODE_PERMISSION_DEFAULT`]; no pre-trust (no trust dialog) |
+//! | `model_args()` | `-m <id>`; a requested effort is refused (no TUI effort option); flag declared from a prior 1.18.21 help listing, not recorded here |
 //! | `question_dialog()` | numbered `question` picker with custom answer and keyboard footer (1.18.21) |
 //! | `reset_command()` | `/new` |
 //! | `login_check()` | none (`opencode auth list` is a listing, not a check) |
 //! | `rpc_launch()` | `opencode` + [`OPENCODE_RPC_FLAGS`] + the unattended env default (no resume flag); explicit policy through `rpc_launch_with_options()` |
 //! | `signals()` | title spinner not measured; sync frames once its DECRQM 2026 query is answered; OSC 9;4 not measured |
+//! | `ambient_feed()` | feature `turns`: best-effort replies from its TUI's server — `/event` `session.idle`, then the last assistant message's text parts when it finished `stop` (shapes of 1.18.21 as recorded by the predecessor crate; synthetic fixtures only, no live check) |
+//! | `ambient_feed_launch()` | feature `turns`, only through `AgentTerminal::spawn_with_ambient_feed`: `--port <free loopback port> --hostname 127.0.0.1`, env `OPENCODE_SERVER_USERNAME=opencode`, `OPENCODE_SERVER_PASSWORD=<fresh 32 hex digits>` |
 
 use std::path::Path;
 
 use crate::agent::detect::{dialog_at_bottom, has_any};
 use crate::agent::{
-    AgentProfile, Dialog, LaunchPlan, Permissions, RpcLaunch, RpcLaunchOptions, ShellKind,
-    SignalHints, TrustPolicy, Unlock,
+    AgentProfile, Dialog, LaunchPlan, ModelChoice, Permissions, RpcLaunch, RpcLaunchOptions,
+    ShellKind, SignalHints, TrustPolicy, Unlock,
 };
 use crate::screen::normalize;
 
@@ -68,7 +73,8 @@ const LEGACY_HINTS: &[&str] = &["type a message", "press enter", "ctrl+c"];
 
 /// opencode's screens. It shows no startup dialog. Pending input uses the default rule:
 /// opencode's composer (`┃  Ask anything…`) has no prompt marker, so it reads `None`
-/// (unreadable) — not measured with a paste.
+/// (unreadable) — not measured with a paste. A submit therefore gets no Enter unless it
+/// opts into [`UnreadableComposer::EnterOnce`](crate::agent::UnreadableComposer::EnterOnce).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OpencodeProfile;
 
@@ -113,6 +119,32 @@ impl AgentProfile for OpencodeProfile {
                     platform: None,
                     source: "src/agent/profiles/opencode.rs",
                 },
+                #[cfg(feature = "turns")]
+                Evidence {
+                    operation: "ambient turn feed from the TUI server: launch flags, routes and event shapes",
+                    kind: EvidenceKind::Declaration,
+                    cli_version: Some("1.18.21"),
+                    platform: None,
+                    source: "docs/pty-ambient-turns.md",
+                },
+                #[cfg(feature = "turns")]
+                Evidence {
+                    operation: "ambient turn feed client rules and server-owner check against a scripted server",
+                    kind: EvidenceKind::SyntheticFixture,
+                    cli_version: None,
+                    platform: Some("macos-aarch64"),
+                    source: "tests/ambient_feed.rs",
+                },
+                #[cfg(feature = "questions")]
+                Evidence {
+                    operation: "ambient question list and reply on the TUI server without a directory query",
+                    kind: EvidenceKind::Declaration,
+                    cli_version: Some("1.18.21"),
+                    platform: None,
+                    source: "docs/agents-and-delivery.md",
+                },
+                #[cfg(feature = "questions")]
+                super::AMBIENT_QUESTION_RELAY,
                 Evidence {
                     operation: "unattended ACP subagent external-file read with local model peer",
                     kind: EvidenceKind::LiveCheck,
@@ -120,6 +152,16 @@ impl AgentProfile for OpencodeProfile {
                     platform: Some("macos-aarch64"),
                     source: "docs/permission-validation.md",
                 },
+                // Only the argv construction is tested here. The flag itself is carried
+                // from a prior measurement that this repository does not record.
+                Evidence {
+                    operation: "PTY model flag in the default TUI command",
+                    kind: EvidenceKind::Declaration,
+                    cli_version: Some("1.18.21"),
+                    platform: None,
+                    source: "docs/agents-and-delivery.md",
+                },
+                super::MODEL_ARGV_EVIDENCE,
             ],
         }
     }
@@ -175,8 +217,56 @@ impl AgentProfile for OpencodeProfile {
         )
     }
 
+    /// `-m <id>` after the permission arguments; the permission env is unchanged.
+    /// The TUI command has no reasoning-effort option, so any requested effort returns
+    /// [`Error::Unsupported`](crate::Error::Unsupported) instead of launching without
+    /// it. Omit the effort to select only the model.
+    ///
+    /// Like the Codex mapping, a base word spelling the model option (`-m…`, `--model`
+    /// or `--model=…`) returns [`Error::InvalidInput`](crate::Error::InvalidInput), even
+    /// as another option's operand.
+    ///
+    /// Evidence: `-m` is listed by opencode 1.18.21's TUI help per prior measurement;
+    /// not re-recorded here; opencode 2.x not covered. That measurement found
+    /// `--variant` on `opencode run` only, which this profile does not launch.
+    fn model_args(&self, choice: &ModelChoice, base_args: &[String]) -> crate::Result<Vec<String>> {
+        super::requested_effort(self.id(), choice, &[])?;
+        if base_args
+            .iter()
+            .any(|word| word.starts_with("-m") || word == "--model" || word.starts_with("--model="))
+        {
+            return Err(crate::Error::InvalidInput(
+                "opencode launch already supplies a model".into(),
+            ));
+        }
+        Ok(vec!["-m".into(), choice.model.clone()])
+    }
+
     fn reset_command(&self) -> Option<&'static str> {
         Some("/new")
+    }
+
+    /// Its TUI's own server: OpenCode writes no transcript to tail. Best effort, read from
+    /// the shapes of 1.18.21 (see [`turns::ambient`](crate::agent::turns::ambient)); OpenCode
+    /// 2.x is not covered.
+    #[cfg(feature = "turns")]
+    fn ambient_feed(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::agent::turns::ambient::AmbientFeed>> {
+        Some(std::sync::Arc::new(
+            super::ambient::opencode::OpencodeServer,
+        ))
+    }
+
+    /// `--port <a loopback port free at spawn> --hostname 127.0.0.1` and Basic auth:
+    /// `OPENCODE_SERVER_USERNAME=opencode`, a fresh 32-hex-digit
+    /// `OPENCODE_SERVER_PASSWORD` from 16 bytes of OS randomness.
+    #[cfg(feature = "turns")]
+    fn ambient_feed_launch(
+        &self,
+        plan: &mut LaunchPlan,
+    ) -> crate::Result<Option<crate::agent::turns::ambient::AmbientEndpoint>> {
+        super::ambient::opencode::launch_server(plan).map(Some)
     }
 
     /// verified: opencode 1.18.21, cold launch only — title `OpenCode`; it asks DECRQM 2026

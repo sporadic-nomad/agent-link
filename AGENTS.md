@@ -19,7 +19,21 @@ macOS arm64 with an explicit host-enforced exclusive writer lease. Its dedicated
 receiver reports attribution and continuity loss independently of delivery tickets.
 Codex, Pi and Cursor support separate direct, single-terminal namespaces. Codex
 has explicit final text, Pi infers completion, and Cursor handles bounded in-place
-rewrites with mixed model text exposed only by explicit opt-in.
+rewrites with mixed model text exposed only by explicit opt-in. The separate
+`turns::ambient` tier reads a CLI's own transcript for any PTY on Unix and Windows
+without a lease; it labels its evidence but never claims writer exclusion or attribution.
+The Claude, Codex, Pi and Cursor profiles supply best-effort ambient sources
+(`agent::profiles::ambient`) for the user's own configuration directory, without a
+version pin; Cursor's mixed text is opt-in there too.
+Its feeds poll a CLI's own server instead: OpenCode's TUI server, launched with a loopback
+port and per-spawn password only through `spawn_with_ambient_feed`, is read over the
+private bounded loopback HTTP client (`agent::loopback`, shared with the OpenCode question
+feed) after its server process is identified as the launched agent.
+With `questions`, an ambient transcript attachment also supplies Claude and Codex
+questions, relayed only while the screen shows the same question and answered with the
+profile's keys (`observe_ambient_transcript_questions`), and `OpenCodeAmbientQuestions`
+reads and answers questions for a host-specified root session on an OpenCode TUI server
+launched that way, through the same owner-checked loopback client.
 
 PTY recovery attachments expose process-local byte cursors, loss ranges and geometry;
 optional display snapshots are fenced to output but are not parser checkpoints.
@@ -88,7 +102,10 @@ for packaging and publication work.
 - **Delivery:** unknown foreground ownership is unproven. Submission requires observed
   paste text followed by fresh, stable evidence from a readable composer. Noise, silence
   or an unknown verdict cannot confirm delivery. Preserve event order and the screen/output
-  fences used to establish that evidence.
+  fences used to establish that evidence. The only exception is the explicit per-send
+  `UnreadableComposer::EnterOnce` opt-in: a composer that stays unreadable can get one
+  Enter after a quiet paste echo and the pre-Enter checks, and it reports
+  `UnverifiedEnter`, never `Delivered`.
 - **Defaults:** use YOLO/unattended permission settings for profile-based PTY and RPC
   launches. Restrictions require explicit `Permissions::AgentDefault` or `Custom`
   configuration; do not silently ignore unsupported RPC policy selection. Leave trust
@@ -113,6 +130,10 @@ that merely reproduce an implementation expression or unnecessarily expose priva
 | Isolated Codex, Pi and Cursor PTY turn observation | `agent::profiles::turns::isolated`, `tests/isolated_turns.rs`, `tests/compatibility.rs` |
 | PTY question observation and answers | `agent::questions`, `tests/pty_questions.rs`, `tests/isolated_turns.rs`, `tests/fixtures/questions/`, optional native `scripts/check_opencode_questions.py` |
 | Claude PTY turn observation | `agent::turns`, `agent::profiles::turns::claude`, `tests/claude_turns.rs`, `tests/compatibility.rs` |
+| Best-effort ambient PTY turn observation | `agent::turns::ambient`, `tests/ambient_turns.rs` |
+| Built-in ambient sources (lookups, parsers, fixtures) | `agent::profiles::ambient`, `tests/ambient_sources.rs`, `tests/compatibility.rs`, `tests/fixtures/transcripts/ambient/` |
+| Ambient feeds, OpenCode server feed, loopback HTTP or server-owner check | `agent::turns::ambient`, `agent::loopback`, `agent::profiles::ambient::opencode`, `tests/ambient_feed.rs` (stub server in `tests/common/http_stub.rs`, `opencode_stub.rs`), `agent::questions` |
+| Best-effort ambient questions (transcript hook, screen agreement, OpenCode TUI question feed) | `agent::turns::ambient::question`, `agent::profiles::ambient` (question hooks, `tests/fixtures/transcripts/ambient/*/question-*.jsonl`), `agent::questions::opencode::ambient`, `tests/ambient_questions.rs`, `tests/pty_questions.rs` |
 | RPC framing, errors or privacy | `src/rpc/tests.rs`, framing/input unit tests, `tests/rpc_roundtrip.rs` |
 | Native adapter lifecycle or protocol | `src/codex/tests.rs`, `tests/codex_adapter.rs`, `src/claude/tests.rs`; synthetic pinned wire projections in `tests/fixtures/codex-app-server/` |
 | CLI profiles or launch behavior | `tests/profiles_fixtures.rs`, `tests/profiles_launch.rs`, startup replay tests |
@@ -161,7 +182,7 @@ python3 scripts/check.py --skip-tests
 ```
 
 This checks formatting, the supported feature combinations, all-target Clippy with
-warnings denied and rustdoc. Reserve `python3 scripts/check.py` (without `--skip-tests`)
+warnings denied, default-feature and `turns`-only core rustdoc and all-feature workspace rustdoc. Reserve `python3 scripts/check.py` (without `--skip-tests`)
 for release preparation or an explicit request for a full run; it also runs the full
 non-live test suite. CI continues to run the full gate.
 

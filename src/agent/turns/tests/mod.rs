@@ -1,5 +1,6 @@
 mod lifecycle;
 pub(in crate::agent) mod peer;
+mod wait;
 
 use std::fs;
 use std::os::unix::fs::symlink;

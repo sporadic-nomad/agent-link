@@ -66,7 +66,10 @@ pub struct Timing {
     /// outside it instead of being absorbed into the paste. Default 250 ms.
     pub paste_echo_quiet: Duration,
     /// Cap on the paste-settle wait. Submission still requires visible pasted text;
-    /// reaching this cap alone never authorizes Enter. Default 2 s.
+    /// reaching this cap alone never authorizes Enter — neither the verified one nor the
+    /// opt-in unverified one of
+    /// [`UnreadableComposer::EnterOnce`](super::UnreadableComposer::EnterOnce), which
+    /// needs output after the paste that went quiet before it. Default 2 s.
     pub paste_echo_max: Duration,
     /// Submit verification requires this much output quiet or a readable composer verdict
     /// that stays stable across polls during continuing output. Default 250 ms.
@@ -83,7 +86,8 @@ pub struct Timing {
     /// Opting into retries can submit twice if the agent accepted the first Enter but
     /// has not redrawn its composer yet. Screen evidence cannot guarantee exactly-once
     /// delivery; enable retries only when the integration accepts that risk. Known reset
-    /// commands never retry, regardless of this value.
+    /// commands never retry, regardless of this value, and neither does the opt-in
+    /// unverified Enter of [`UnreadableComposer::EnterOnce`](super::UnreadableComposer::EnterOnce).
     pub submit_retry_max: u32,
     /// Activity: "idle" is applied only after the working signals stayed off this long, so
     /// spinner frames and brief title clears do not flicker. Default 600 ms.
@@ -92,6 +96,18 @@ pub struct Timing {
     /// cleared — agents re-send it about every second, and a killed turn never clears it.
     /// Default 2.5 s.
     pub progress_stale: Duration,
+    /// Turn gate for [`reset`](super::AgentTerminal::reset) and
+    /// [`reset_and_send`](super::AgentTerminal::reset_and_send): while the agent's
+    /// [`Activity`](super::Activity) is `Working`, the reset waits — at most this long in
+    /// total, counted from the first time it finds the agent working — before its command
+    /// is typed. Still `Working` at the end ⇒
+    /// [`AbortReason::AgentWorking`](super::AbortReason::AgentWorking), nothing typed.
+    /// Activity is a heuristic (a Braille title spinner or a fresh OSC 9;4 progress
+    /// report): the gate makes a reset typed into a running turn less likely, it does not
+    /// prove that the turn ended, and an agent that never signals `Working` is never held.
+    /// The refusal check of a reset still applies after the gate. Default
+    /// `Duration::ZERO`: off — a reset is typed as soon as the agent is ready.
+    pub reset_turn_wait: Duration,
     /// Per-command timeout of an install or sign-in probe. Default 8 s.
     pub probe_timeout: Duration,
     /// A timeout for a commit-point handshake
@@ -129,6 +145,7 @@ impl Timing {
             &mut self.submit_verify_poll,
             &mut self.idle_debounce,
             &mut self.progress_stale,
+            &mut self.reset_turn_wait,
             &mut self.probe_timeout,
             &mut self.revalidate_timeout,
             &mut self.ready_dialog_watch,
@@ -163,6 +180,7 @@ impl Default for Timing {
             submit_retry_max: 0,
             idle_debounce: ms(600),
             progress_stale: ms(2_500),
+            reset_turn_wait: Duration::ZERO,
             probe_timeout: ms(8_000),
             revalidate_timeout: ms(10_000),
             ready_dialog_watch: ms(1_000),
@@ -180,12 +198,14 @@ mod tests {
             startup_quiet: Duration::MAX,
             trust_watch: Duration::MAX,
             ready_dialog_watch: Duration::MAX,
+            reset_turn_wait: Duration::MAX,
             ..Timing::default()
         }
         .clamped();
         assert_eq!(huge.startup_quiet, Timing::MAX_WAIT);
         assert_eq!(huge.trust_watch, Timing::MAX_WAIT);
         assert_eq!(huge.ready_dialog_watch, Timing::MAX_WAIT);
+        assert_eq!(huge.reset_turn_wait, Timing::MAX_WAIT);
         let _ = std::time::Instant::now() + huge.startup_quiet;
         assert_eq!(Timing::default().clamped(), Timing::default());
     }
@@ -230,5 +250,6 @@ mod tests {
             ],
             [8000, 10000, 1000, 1000, 300]
         );
+        assert_eq!(t.reset_turn_wait, Duration::ZERO, "the turn gate is opt-in");
     }
 }

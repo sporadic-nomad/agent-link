@@ -341,7 +341,13 @@ pub trait AgentProfile: Send + Sync {
     /// composer no longer holds `sent`; `None` means the composer cannot be read and
     /// never proves submission or permits an Enter retry. Verification first observes
     /// `Some(true)` after the paste, then requires fresh output and stable `Some(false)`
-    /// after Enter. See [`detect::pending_input_default`] for the default rule.
+    /// after Enter. Only a send that opted into
+    /// [`UnreadableComposer::EnterOnce`](super::UnreadableComposer::EnterOnce) treats `None`
+    /// on every screen of the paste check as grounds for one unverified Enter
+    /// ([`AbortReason::UnverifiedEnter`](super::AbortReason::UnverifiedEnter)). The
+    /// final screen must still return `None` after the paste goes quiet. A `Some(_)`
+    /// during the original paste check keeps the verified path. See
+    /// [`detect::pending_input_default`] for the default rule.
     fn pending_input(&self, screen: &str, sent: &str) -> Option<bool> {
         detect::pending_input_default(screen, sent)
     }
@@ -405,6 +411,49 @@ pub trait AgentProfile: Send + Sync {
     /// Defaults to unknown; overriding a built-in profile does not inherit its evidence.
     fn compatibility(&self) -> super::compatibility::Compatibility {
         super::compatibility::Compatibility::default()
+    }
+
+    /// This CLI's best-effort ("ambient") transcript source, which
+    /// [`AgentTerminal::attach_ambient_turns`](super::AgentTerminal::attach_ambient_turns)
+    /// follows for any terminal running the profile. Called on the host's thread at each
+    /// attach. Default: `None` (attach returns
+    /// [`AttachError::NoAmbientSource`](super::turns::AttachError::NoAmbientSource)). The
+    /// built-in Claude, Codex, Pi and Cursor profiles return their CLI's source (Cursor's
+    /// reports completion only; see
+    /// [`CursorProfile::ambient_turns_with_unseparated_text`](super::profiles::CursorProfile::ambient_turns_with_unseparated_text)).
+    /// Ambient observations carry no writer exclusion and no attribution guarantee; see
+    /// [`turns::ambient`](super::turns::ambient).
+    #[cfg(feature = "turns")]
+    fn ambient_turns(&self) -> Option<std::sync::Arc<dyn super::turns::ambient::AmbientSource>> {
+        None
+    }
+
+    /// This CLI's best-effort ambient turn feed, for a CLI that serves its turns instead
+    /// of writing a transcript to tail (OpenCode's TUI server):
+    /// [`AgentTerminal::attach_ambient_turns`](super::AgentTerminal::attach_ambient_turns)
+    /// polls it when [`ambient_turns`](Self::ambient_turns) is `None`. Called on the host's
+    /// thread at each attach. Default: `None`. A feed that reads the agent's own server
+    /// usually needs [`ambient_feed_launch`](Self::ambient_feed_launch) too.
+    #[cfg(feature = "turns")]
+    fn ambient_feed(&self) -> Option<std::sync::Arc<dyn super::turns::ambient::AmbientFeed>> {
+        None
+    }
+
+    /// What a launch must carry for the agent to serve its ambient feed, added to `plan`
+    /// by [`AgentTerminal::spawn_with_ambient_feed`](super::AgentTerminal::spawn_with_ambient_feed)
+    /// (and never by an ordinary spawn): `plan` is the profile's [`launch`](Self::launch)
+    /// for a shell spawn, or the host's direct argv with the launch's environment. Called
+    /// once per spawn, on the host's thread, before any process starts. Returns where the
+    /// agent will serve and the credentials the launch gave it; `Ok(None)` when the profile
+    /// serves no feed. Variables added to [`LaunchPlan::env`] reach the agent's
+    /// environment (and, for a shell spawn, the shell's). Default: `Ok(None)`.
+    #[cfg(feature = "turns")]
+    fn ambient_feed_launch(
+        &self,
+        plan: &mut LaunchPlan,
+    ) -> crate::Result<Option<super::turns::ambient::AmbientEndpoint>> {
+        let _ = plan;
+        Ok(None)
     }
 
     /// Launcher names to look for on `PATH`, in priority order (an install probe tries

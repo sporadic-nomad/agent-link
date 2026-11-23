@@ -30,12 +30,17 @@
 //!   the composer (claude shows lines − 1 and chips only long pastes); one line shows inline
 //!   (an empty one adds nothing). Backspace removes one character or a whole chip.
 //! - Enter with a non-empty composer clears it and adds `you: <composer>` at once;
-//!   `agent: ok #<n>` follows 300 ms later. Typed `/new` + Enter resets instead: pending
-//!   replies, spinner and progress end at once, nothing is drawn for `--reset-silence-ms`
-//!   (default 0), then `resetting conversation`, then a fresh screen `--reset-delay-ms`
-//!   (default 200) later. Input during a reset is dropped. With `--refuse-next-reset`,
-//!   the first `/new` empties the composer and appends a refusal to the same transcript.
-//!   With `--hold-submit-display` the refusal appears only once Down releases it.
+//!   `agent: ok #<n>` follows `--reply-ms` (default 300) later. Typed `/new` + Enter resets
+//!   instead: pending replies, spinner and progress end at once, nothing is drawn for
+//!   `--reset-silence-ms` (default 0), then `resetting conversation`, then a fresh screen
+//!   `--reset-delay-ms` (default 200) later. Input during a reset is dropped. With
+//!   `--refuse-next-reset`, the first `/new` empties the composer and appends a refusal to
+//!   the same transcript. With `--hold-submit-display` the refusal appears only once Down
+//!   releases it. `--refuse-busy-reset`: every `/new` while a reply is pending is refused
+//!   the same way (codex refuses `/clear` during a task); the reply stays due.
+//! - `--crash-mid-reply-ms N`: N ms after the first submit (mid-reply with a longer
+//!   `--reply-ms`) the fake exits 1 as if killed: its spinner title stays (a dead agent
+//!   cannot reset it), the rest of the exit runs as usual.
 //! - Esc is read (a lone ESC never swallows the byte after it) and ignored.
 //! - `--title`: OSC 0 title `fake`, a Braille glyph + ` fake` every 100 ms while a reply is
 //!   pending. `--background-title`: a title update every 100 ms even while idle.
@@ -47,9 +52,24 @@
 //!   `--sync`: every redraw inside DEC 2026 (`ESC[?2026h` … `ESC[?2026l`).
 //! - `--input-log PATH`: append each raw stdin read before decoding it. A later
 //!   acknowledged input fences the bytes seen by the peer.
+//! - `--unreadable-composer`: draw the composer as `┃ <content>` — no prompt marker, so
+//!   the default pending-input rule reads `None`, as for opencode's `┃  Ask anything…`.
+//!   `--silent-paste`: a paste changes the composer but draws nothing (no echo).
 //! - `--exit-on-input`: reads nothing; exits 0 (the normal exit) as soon as input is
 //!   pending, leaving it unread for the shell — an agent that leaves before reading a
 //!   paste (unix: `poll`; Windows: the console handle's wait).
+//! - `--port N` (with `--hostname H`, default `127.0.0.1`): serve the synthetic
+//!   OpenCode-like API of `tests/common/opencode_stub.rs` on that port from this process,
+//!   with Basic auth `$OPENCODE_SERVER_USERNAME` (default `opencode`) :
+//!   `$OPENCODE_SERVER_PASSWORD`; every reply (`agent: ok #<n>`) is also a stopped turn of
+//!   its session, told on its event stream. `--serve-open`: no auth (an unprotected
+//!   server); `--serve-password P`: expect `P` instead; `--serve-history`: the session
+//!   holds a turn that ended a minute before start, and every event stream opened starts
+//!   by telling the session went idle; `--serve-info PATH`: write `port=<N>` and
+//!   `password=<P>` lines there; `--serve-question`: the session holds one pending
+//!   question request `que_fake` (the `question-dialog` scene's prompt and choice);
+//!   `--serve-replies PATH`: append each question reply taken as `<id> <body>` there. A
+//!   port that cannot be bound exits 3.
 //!
 //! | Scene | Extra |
 //! |---|---|
@@ -73,8 +93,12 @@ mod claude_peer;
 #[cfg(feature = "codex")]
 #[path = "fake_agent/codex_peer.rs"]
 mod codex_peer;
+#[path = "../common/http_stub.rs"]
+mod http_stub;
 #[path = "fake_agent/input.rs"]
 mod input;
+#[path = "../common/opencode_stub.rs"]
+mod opencode_stub;
 #[path = "fake_agent/scenes.rs"]
 mod scenes;
 #[cfg(feature = "tools")]
@@ -104,7 +128,6 @@ const USAGE: &str = concat!(
     "       [--swallow-ms N] [--keep-frame] [--hold-submit-display]\n",
     "       [--refuse-next-reset] [--input-log PATH]",
 );
-const REPLY_AFTER: Duration = Duration::from_millis(300);
 const SPINNER_EVERY: Duration = Duration::from_millis(100);
 const PROGRESS_FOR: Duration = Duration::from_millis(400);
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -135,6 +158,12 @@ fn main() {
         eprintln!("agent-link-fake-agent: {e}\n{USAGE}\nscenes: {scenes}");
         std::process::exit(2)
     });
+    let served = opts.serve.as_ref().map(|serve| {
+        serve.start().unwrap_or_else(|e| {
+            eprintln!("agent-link-fake-agent: cannot serve: {e}");
+            std::process::exit(3)
+        })
+    });
     let (tx, rx) = mpsc::channel();
     // Before raw mode (^C) and before the reader thread (it inherits the signal mask).
     let interrupt = tx.clone();
@@ -151,6 +180,9 @@ fn main() {
         std::thread::spawn(move || read_input(tx));
     }
     let mut app = App::new(opts);
+    app.server = served
+        .as_ref()
+        .map(|(server, _)| std::sync::Arc::clone(server));
     app.start(Instant::now());
     let code = app.run(&rx);
     app.finish();
@@ -205,11 +237,76 @@ struct Opts {
     reset_delay: Duration,
     reset_silence: Duration,
     refuse_next_reset: bool,
+    /// `/new` while a reply is pending is refused.
+    refuse_busy_reset: bool,
+    /// How long after a submit its reply is drawn.
+    reply_after: Duration,
+    /// How long after the first submit the fake dies with its spinner title left.
+    crash_after: Option<Duration>,
     dialog_after: Duration,
     swallow: Duration,
     submit_display_delay: Duration,
     hold_submit_display: bool,
+    unreadable_composer: bool,
+    silent_paste: bool,
     input_log: Option<File>,
+    serve: Option<Serve>,
+}
+
+/// The OpenCode-like server this process serves (`--port`).
+#[derive(Default)]
+struct Serve {
+    port: u16,
+    hostname: Option<String>,
+    open: bool,
+    password: Option<String>,
+    history: bool,
+    info: Option<String>,
+    question: bool,
+    replies: Option<String>,
+}
+
+impl Serve {
+    fn start(&self) -> std::io::Result<(std::sync::Arc<opencode_stub::OpenCode>, http_stub::Stub)> {
+        let host = self.hostname.as_deref().unwrap_or("127.0.0.1");
+        let ip: std::net::IpAddr = host
+            .parse()
+            .map_err(|_| std::io::Error::other(format!("not an IP address: {host}")))?;
+        let user = std::env::var("OPENCODE_SERVER_USERNAME").unwrap_or_else(|_| "opencode".into());
+        let password = self
+            .password
+            .clone()
+            .or_else(|| std::env::var("OPENCODE_SERVER_PASSWORD").ok());
+        let password = if self.open { None } else { password };
+        let server = opencode_stub::OpenCode::new(&user, password.as_deref());
+        if self.history {
+            server.turn_at("an earlier reply", opencode_stub::now_ms() - 60_000);
+            server
+                .replay_idle
+                .lock()
+                .expect("replay list")
+                .push(opencode_stub::SESSION.into());
+        }
+        if self.question {
+            server.ask(
+                "que_fake",
+                opencode_stub::SESSION,
+                "Fake",
+                "Continue the fixture?",
+                &["Continue"],
+            );
+        }
+        *server.reply_log.lock().expect("reply log") = self.replies.as_ref().map(Into::into);
+        let stub = http_stub::Stub::bind((ip, self.port).into(), server.handler())?;
+        if let Some(path) = &self.info {
+            let password = std::env::var("OPENCODE_SERVER_PASSWORD").unwrap_or_default();
+            std::fs::write(
+                path,
+                format!("port={}\npassword={password}\n", stub.addr().port()),
+            )?;
+        }
+        Ok((server, stub))
+    }
 }
 
 impl Opts {
@@ -232,11 +329,17 @@ impl Opts {
             reset_delay: Duration::from_millis(200),
             reset_silence: Duration::ZERO,
             refuse_next_reset: false,
+            refuse_busy_reset: false,
+            reply_after: Duration::from_millis(300),
+            crash_after: None,
             dialog_after: Duration::from_millis(1500),
             swallow: Duration::from_millis(100),
             submit_display_delay: Duration::ZERO,
             hold_submit_display: false,
+            unreadable_composer: false,
+            silent_paste: false,
             input_log: None,
+            serve: None,
         };
         while let Some(flag) = args.next() {
             let slot = match flag.as_str() {
@@ -276,6 +379,64 @@ impl Opts {
                     opts.refuse_next_reset = true;
                     continue;
                 }
+                "--refuse-busy-reset" => {
+                    opts.refuse_busy_reset = true;
+                    continue;
+                }
+                "--crash-mid-reply-ms" => {
+                    let value = args.next().ok_or_else(|| format!("{flag} needs a value"))?;
+                    let ms: u64 = value.parse().map_err(|_| {
+                        format!("{flag}: {value:?} is not a number of milliseconds")
+                    })?;
+                    opts.crash_after = Some(Duration::from_millis(ms));
+                    continue;
+                }
+                "--unreadable-composer" => {
+                    opts.unreadable_composer = true;
+                    continue;
+                }
+                "--silent-paste" => {
+                    opts.silent_paste = true;
+                    continue;
+                }
+                "--port" => {
+                    let port = args.next().ok_or("--port needs a value")?;
+                    opts.serve.get_or_insert_with(Serve::default).port =
+                        port.parse().map_err(|_| format!("--port: {port:?}"))?;
+                    continue;
+                }
+                "--hostname" => {
+                    let host = args.next().ok_or("--hostname needs a value")?;
+                    opts.serve.get_or_insert_with(Serve::default).hostname = Some(host);
+                    continue;
+                }
+                "--serve-open" => {
+                    opts.serve.get_or_insert_with(Serve::default).open = true;
+                    continue;
+                }
+                "--serve-history" => {
+                    opts.serve.get_or_insert_with(Serve::default).history = true;
+                    continue;
+                }
+                "--serve-password" => {
+                    let password = args.next().ok_or("--serve-password needs a value")?;
+                    opts.serve.get_or_insert_with(Serve::default).password = Some(password);
+                    continue;
+                }
+                "--serve-question" => {
+                    opts.serve.get_or_insert_with(Serve::default).question = true;
+                    continue;
+                }
+                "--serve-replies" => {
+                    let path = args.next().ok_or("--serve-replies needs a path")?;
+                    opts.serve.get_or_insert_with(Serve::default).replies = Some(path);
+                    continue;
+                }
+                "--serve-info" => {
+                    let path = args.next().ok_or("--serve-info needs a path")?;
+                    opts.serve.get_or_insert_with(Serve::default).info = Some(path);
+                    continue;
+                }
                 "--input-log" => {
                     let path = args.next().ok_or("--input-log needs a path")?;
                     opts.input_log = Some(
@@ -287,6 +448,7 @@ impl Opts {
                     );
                     continue;
                 }
+                "--reply-ms" => &mut opts.reply_after,
                 "--reset-delay-ms" => &mut opts.reset_delay,
                 "--reset-silence-ms" => &mut opts.reset_silence,
                 "--dialog-after-ms" => &mut opts.dialog_after,
@@ -344,12 +506,17 @@ struct App {
     progress_clear: Option<Instant>,
     background_title_at: Option<Instant>,
     dialog_at: Option<Instant>,
+    /// `--crash-mid-reply-ms`: when the fake dies; `crashed` once it did (its title stays).
+    crash_at: Option<Instant>,
+    crashed: bool,
     last_paste_end: Option<Instant>,
     /// First row (1-based) of the block in the last draw; `None` before the first draw.
     block_row: Option<usize>,
     /// Last row (1-based) of the last draw.
     last_row: usize,
     exit: Option<i32>,
+    /// The OpenCode-like server this process serves (`--port`).
+    server: Option<std::sync::Arc<opencode_stub::OpenCode>>,
 }
 
 impl App {
@@ -367,10 +534,13 @@ impl App {
             progress_clear: None,
             background_title_at: None,
             dialog_at: None,
+            crash_at: None,
+            crashed: false,
             last_paste_end: None,
             block_row: None,
             last_row: 0,
             exit: None,
+            server: None,
         }
     }
 
@@ -403,6 +573,9 @@ impl App {
                 return code;
             }
             self.fire(Instant::now());
+            if let Some(code) = self.exit {
+                return code;
+            }
             let input = match self.next_deadline() {
                 Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
                 None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -443,10 +616,13 @@ impl App {
         }
     }
 
-    /// Ends the working signals, erases the block (the shell's prompt goes there; with
-    /// `--keep-frame` below the last row instead) and turns bracketed paste off.
+    /// Ends the working signals (not after a crash), erases the block (the shell's prompt
+    /// goes there; with `--keep-frame` below the last row instead) and turns bracketed
+    /// paste off.
     fn finish(&mut self) {
-        self.end_signals();
+        if !self.crashed {
+            self.end_signals();
+        }
         let mut out = String::new();
         if let Some(row) = self.block_row {
             if self.opts.keep_frame {
@@ -484,6 +660,7 @@ impl App {
             fresh_at,
             dialog_at,
             self.replies.front().copied(),
+            self.crash_at,
             self.delayed_submits
                 .front()
                 .filter(|_| !self.opts.hold_submit_display)
@@ -544,11 +721,20 @@ impl App {
             let (_, text) = self.delayed_submits.pop_front().expect("queued submit");
             self.show_submit(text, now);
         }
+        if self.crash_at.is_some_and(|at| at <= now) {
+            self.crash_at = None;
+            self.crashed = true;
+            self.exit = Some(1);
+            return;
+        }
         while self.replies.front().is_some_and(|at| *at <= now) {
             self.replies.pop_front();
             self.replies_done += 1;
             self.transcript
                 .push(format!("agent: ok #{}", self.replies_done));
+            if let Some(server) = &self.server {
+                server.turn(&format!("ok #{}", self.replies_done));
+            }
             if self.replies.is_empty() && self.spinner.take().is_some() {
                 set_title("fake");
             }
@@ -620,6 +806,8 @@ impl App {
                     self.paste(&bytes, now);
                     if self.opts.scene == "question-on-paste" {
                         self.stage = Stage::Question;
+                    } else if self.opts.silent_paste {
+                        return;
                     }
                     self.draw();
                 }
@@ -708,7 +896,8 @@ impl App {
     fn show_submit(&mut self, text: String, now: Instant) {
         self.composer.clear();
         if text.trim() == "/new" {
-            if std::mem::take(&mut self.opts.refuse_next_reset) {
+            let busy = self.opts.refuse_busy_reset && !self.replies.is_empty();
+            if std::mem::take(&mut self.opts.refuse_next_reset) || busy {
                 self.transcript.push(scenes::RESET_REFUSAL.into());
                 self.draw();
                 return;
@@ -735,7 +924,10 @@ impl App {
             self.exit = Some(0);
             return;
         }
-        self.replies.push_back(now + REPLY_AFTER);
+        self.replies.push_back(now + self.opts.reply_after);
+        if let Some(after) = self.opts.crash_after {
+            self.crash_at.get_or_insert(now + after);
+        }
         if self.opts.title && self.spinner.is_none() {
             self.spinner = Some((now, 0));
         }
@@ -775,7 +967,15 @@ impl App {
                 "enter to confirm".into(),
             ],
             Stage::Chat if composer => vec![
-                format!("> {}", self.composer_text()),
+                format!(
+                    "{} {}",
+                    if self.opts.unreadable_composer {
+                        '┃'
+                    } else {
+                        '>'
+                    },
+                    self.composer_text()
+                ),
                 "fake-agent ready · esc to interrupt".into(),
             ],
             Stage::Chat => Vec::new(),

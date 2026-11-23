@@ -6,7 +6,7 @@ no UI or host-framework dependency: your application owns rendering and UX while
 manages child lifecycles, bounded event streams, startup steering, verified message delivery
 and protocol framing.
 
-> **Version:** `0.3.0` · **Edition:** Rust 2024 · **MSRV:** 1.85 · **License:** MIT
+> **Version:** `0.3.1` · **Edition:** Rust 2024 · **MSRV:** 1.85 · **License:** MIT
 
 Only **macOS** has verified native runtime results. Linux and Windows runtime support
 remains unverified; see [platform evidence](../README.md#platforms). The built-in Cursor
@@ -24,8 +24,11 @@ Pick the smallest layer that fits how you talk to the agent:
 | Headless terminal model & signals | `screen::Vt100Model`, `ScreenSnapshot` | `screen` (default) | [PTY & Screen](pty-and-screen.md#headless-screen-model-screen-feature) |
 | Interactive agent CLI with startup & verified paste | `agent::AgentTerminal`, `ProfileRegistry` | `agent` (default) | [Agents & Delivery](agents-and-delivery.md) |
 | Relay an interactive question and answer its current ID | `agent::questions::AnswerTicket` | `questions` | [PTY questions](agents-and-delivery.md#pty-questions) |
+| Best-effort questions from any PTY (Claude, Codex, OpenCode), corroborated on screen or owner-checked | `AgentTerminal::observe_ambient_transcript_questions`, `agent::questions::opencode::OpenCodeAmbientQuestions` | `questions` | [Ambient questions](agents-and-delivery.md#best-effort-ambient-questions) |
 | Isolated Codex, Pi and Cursor PTY turn observations | `agent::turns::TranscriptReceiver` | `turns` | [Isolated PTY sources](pty-transcript-sources.md) |
 | Final replies from an exclusive-writer Claude PTY | `agent::turns::TurnReceiver` | `turns` | [Claude PTY final replies](agents-and-delivery.md#claude-pty-final-replies) |
+| Best-effort replies from any PTY, no attribution guarantee | `agent::turns::ambient::AmbientReceiver` | `turns` | [Ambient PTY turns](pty-ambient-turns.md) |
+| Best-effort OpenCode replies from its TUI's own server | `AgentTerminal::spawn_with_ambient_feed`, `agent::turns::ambient::AmbientFeed` | `turns` | [Ambient OpenCode feed](pty-ambient-turns.md#opencode) |
 | Attach application CLI/MCP tools to an agent run | `tools::AgentTools` | `tools` | [Application Tools](application-tools.md) |
 | Check whether CLIs are installed & signed in | `probe::probe_agents`, `probe_agents_detailed` | `probe` | [Permissions & Probes](permissions-and-probes.md) |
 | Raw JSON-lines over stdio | `rpc::RpcChild` | `rpc` | [RPC & Native Adapters](rpc-and-native-adapters.md#generic-json-lines-rpc-rpc) |
@@ -66,8 +69,8 @@ For development, use `{ path = "../agent-link" }` instead of the version.
 | *(none)* | — | — | `portable-pty`, `crossbeam-channel`, `log`, `thiserror`, `libc` (Unix) / `windows-sys` (Windows) | Core PTY, environment, shell, identity, path resolution, process helpers |
 | `screen` | **yes** | — | `vt100`, `regex` | Headless terminal parser, normalized text, OSC/DEC signal tap |
 | `agent` | **yes** | `screen` | — | `AgentTerminal`, built-in CLI profiles, startup gate, verified delivery |
-| `questions` | no | `turns` | `serde_json/raw_value`, `httparse`, `base64`, `percent-encoding` | PTY questions, explicit answer tickets and session-bound OpenCode answers |
-| `turns` | no | `agent` | `serde`, `serde_json`, plus `rustix` and `sha2` on Unix and `close_fds` on macOS arm64 | Controlled Claude, Codex, Pi and Cursor transcript observation on macOS arm64 |
+| `questions` | no | `turns` | `serde_json/raw_value`, `httparse`, `base64`, `percent-encoding` | PTY questions, explicit answer tickets and session-bound OpenCode answers; best-effort ambient question sources |
+| `turns` | no | `agent` | `serde`, `serde_json`, `httparse`, `base64`, `getrandom`, plus `rustix` and `sha2` on Unix and `close_fds` on macOS arm64 | Controlled Claude, Codex, Pi and Cursor transcript observation on macOS arm64; best-effort ambient observation on every platform, including OpenCode's loopback server feed |
 | `tools` | no | `agent` | `serde_json`, `tempfile`, `url` | Per-run CLI/MCP attachment facade |
 | `rpc` | no | `agent` | — | `RpcChild` JSON-lines stdio transport, tracked writes, strict UTF-8 |
 | `probe` | no | `agent` | — | CLI installation and three-way sign-in probes |
@@ -77,7 +80,7 @@ For development, use `{ path = "../agent-link" }` instead of the version.
 | `approvals` | no | — | — | Bounded worker pool for native approval callbacks (pair with `codex`/`acp`/`claude`) |
 | `observers` | no | — | — | `ObserverHub` raw PTY fanout and `Terminal::attach_live_recovery*` |
 | `transcript` | no | — | — | `Projector` bounded presentation view (also enables `portable` without `serde_json`) |
-| `tokio` | no | — | `tokio` (`sync` + `rt` only) | `EventStream`, `Ticket::outcome`, `send_async`, `kill_async` |
+| `tokio` | no | — | `tokio` (`sync` + `rt` only) | `EventStream`, `Ticket::outcome`, `send_async`, `kill_async`, turn receiver `recv` |
 | `test-support` | no | — | — | **Development only.** Builds `agent-link-fake-agent` for test suites. Do not enable in applications |
 
 ---

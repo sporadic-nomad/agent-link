@@ -183,7 +183,8 @@ extern crate self as agent_link;
 //   agent/state/             controller state + transitions (single lock, no I/O under lock)
 //   agent/monitor.rs         monitor thread: bus events, startup gate, activity, timers
 //   agent/controller.rs      job thread: FIFO queue, message job, reset_and_send
-//   agent/delivery.rs        SendOptions, Ticket, TicketId, DeliveryOutcome, AbortReason
+//   agent/delivery.rs        SendOptions, UnreadableComposer, Ticket, TicketId,
+//                            DeliveryOutcome, AbortReason
 //   agent/startup/           startup gate, dialog budgets, rolling UTF-8 output buffer
 //   agent/settle.rs          lull, paste-landed and submit-outcome decisions
 //   agent/verify.rs          verified Enter
@@ -191,6 +192,7 @@ extern crate self as agent_link;
 //   agent/leftover.rs        pre-launch screen baseline and rows drawn since
 //   agent/activity.rs        Activity, ActivityTracker
 //   agent/timing.rs          Timing defaults
+//   agent/turn_gate.rs       opt-in reset wait while the agent's activity is Working
 //   agent/permissions.rs     Permissions, PreTrust, TrustPolicy, ForegroundPolicy
 //   agent/launch.rs          LaunchPlan, ModelChoice, ShellKind, one-shot login-shell command lines
 //   agent/profile.rs         AgentProfile, Dialog, DialogKind, TrustKey, ScreenState,

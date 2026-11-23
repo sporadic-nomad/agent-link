@@ -882,7 +882,7 @@ fn ingress(shared: &Arc<Shared>, seq: u64, line: &str) -> Result<(), Failure> {
                     || !params["toolCall"].is_object()
                     || options
                         .iter()
-                        .any(|o| !o["optionId"].as_str().is_some_and(|id| !id.is_empty()))
+                        .any(|o| o["optionId"].as_str().is_none_or(|id| id.is_empty()))
                 {
                     return Err(Failure::Protocol);
                 }

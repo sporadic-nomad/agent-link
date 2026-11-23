@@ -164,7 +164,7 @@ pub struct TurnReply {
     pub(in crate::agent) inferred: bool,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, feature = "turns"))]
 impl TurnReply {
     pub(in crate::agent) fn push(&mut self, text: &str, limit: usize) {
         if self.truncated {
@@ -253,6 +253,22 @@ impl TurnStatus {
     }
 }
 
+/// Why a blocking or async receive returned without an observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum TurnRecvError {
+    /// The timeout elapsed while observation was still waiting or active. Only blocking
+    /// receives time out.
+    #[error("no turn observation within the timeout")]
+    Timeout,
+    /// Observation ended with [`TurnStatus::Gap`]. Queued output was discarded.
+    #[error("turn observation lost continuity: {0:?}")]
+    Gap(TurnGap),
+    /// Observation ended with [`TurnStatus::Closed`]. Queued output was discarded.
+    #[error("turn observation closed")]
+    Closed,
+}
+
 /// Synchronous refusal to start a turn reader. The terminal keeps running.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
@@ -272,6 +288,10 @@ pub enum AttachError {
     /// The exclusive-writer lease was revoked before attachment.
     #[error("exclusive writer authority was revoked")]
     AuthorityRevoked,
+    /// The terminal's profile supplies no best-effort ambient turn source
+    /// ([`AgentProfile::ambient_turns`](crate::agent::AgentProfile::ambient_turns)).
+    #[error("the profile has no ambient turn source")]
+    NoAmbientSource,
 }
 
 /// Per-attachment limits. Defaults are also the maximum supported values. Set smaller
@@ -304,7 +324,7 @@ impl TurnOptions {
         queue_bytes: 1024 * 1024,
     };
 
-    #[cfg(unix)]
+    #[cfg(any(unix, feature = "turns"))]
     pub(super) fn validate(self) -> Result<(), AttachError> {
         let max = Self::MAX;
         for (value, ceiling) in [

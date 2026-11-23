@@ -1,6 +1,8 @@
 //! Observation types for a dedicated Codex, Pi or Cursor transcript namespace.
 
-use super::{TurnReceiver, TurnReply, TurnStatus};
+use std::time::Duration;
+
+use super::{TurnReceiver, TurnRecvError, TurnReply, TurnStatus};
 
 /// Which interactive transcript to observe. Cursor's recorded text stream can
 /// combine reasoning with its displayed answer. Explicitly opt in to that text.
@@ -62,8 +64,41 @@ impl TranscriptReceiver {
     /// Pull the next observation. A nonempty pull performs bounded synchronous
     /// local file and process checks. An empty queue returns immediately.
     pub fn try_recv(&self) -> Option<TranscriptTurn> {
-        let reply = self.receiver.try_recv()?;
-        Some(match self.source {
+        self.receiver.try_recv().map(|reply| self.turn(reply))
+    }
+
+    /// Wait up to `timeout` for the next observation instead of polling: an observation,
+    /// the gap or closure that ended observation, or [`TurnRecvError::Timeout`]. Blocks
+    /// the calling thread. Wakeups, latency and pull checks are those of
+    /// [`TurnReceiver::recv_timeout`].
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<TranscriptTurn, TurnRecvError> {
+        self.receiver
+            .recv_timeout(timeout)
+            .map(|reply| self.turn(reply))
+    }
+
+    /// Wait up to `timeout` for a status other than `seen`, as
+    /// [`TurnReceiver::wait_status_change`] does. `None` on timeout.
+    pub fn wait_status_change(&self, seen: TurnStatus, timeout: Duration) -> Option<TurnStatus> {
+        self.receiver.wait_status_change(seen, timeout)
+    }
+
+    /// Await the next observation (feature `tokio`), as [`TurnReceiver::recv`] does.
+    /// Never times out; cancel-safe.
+    #[cfg(feature = "tokio")]
+    pub async fn recv(&self) -> Result<TranscriptTurn, TurnRecvError> {
+        self.receiver.recv().await.map(|reply| self.turn(reply))
+    }
+
+    /// Await a status other than `seen` (feature `tokio`), as
+    /// [`TurnReceiver::status_change`] does. Cancel-safe.
+    #[cfg(feature = "tokio")]
+    pub async fn status_change(&self, seen: TurnStatus) -> TurnStatus {
+        self.receiver.status_change(seen).await
+    }
+
+    fn turn(&self, reply: TurnReply) -> TranscriptTurn {
+        match self.source {
             TranscriptSource::Codex => TranscriptTurn::CodexFinal(reply),
             TranscriptSource::Pi => TranscriptTurn::PiInferred(reply),
             TranscriptSource::Cursor if reply.inferred => TranscriptTurn::CursorNextPrompt,
@@ -74,7 +109,7 @@ impl TranscriptReceiver {
             TranscriptSource::CursorWithUnseparatedText => {
                 TranscriptTurn::CursorUnseparatedText(reply)
             }
-        })
+        }
     }
 
     /// Stop observation and discard queued text. The terminal keeps running.

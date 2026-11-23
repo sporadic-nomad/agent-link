@@ -13,7 +13,7 @@ use super::state::{AgentProgram, Config, Controller};
 use super::{
     AbortReason, Activity, AgentLimits, AgentProfile, DeliveryOutcome, ForegroundPolicy,
     LaunchPlan, ModelChoice, Permissions, SendOptions, ShellFallback, ShellKind, Ticket, TicketId,
-    Timing, TrustPolicy, controller, delivery, monitor,
+    Timing, TrustPolicy, UnreadableComposer, controller, delivery, monitor,
 };
 use crate::error::Result;
 use crate::{Event, SpawnMode, SpawnSpec, Terminal};
@@ -167,7 +167,8 @@ pub enum AgentState {
 ///   decides when the agent is ready for programmatic input, and sets
 ///   [`blocking`](Self::blocking) while the host should mask the terminal.
 /// - [`activity`](Self::activity) follows the agent's title spinner and progress reports
-///   (informational only).
+///   (a heuristic; only a reset under the opt-in
+///   [`Timing::reset_turn_wait`] waits on it).
 /// - Changes arrive as [`Event::AgentState`] and [`Event::Activity`] on every receiver
 ///   (also those from [`Terminal::subscribe`] / [`Terminal::attach`]), after every event the
 ///   controller had received when it changed — its own receiver is served last. The
@@ -200,6 +201,9 @@ pub struct AgentTerminal {
     pub(super) ctl: Arc<Controller>,
     #[cfg(all(unix, any(test, feature = "turns")))]
     turns: Option<super::turns::Slot>,
+    /// What best-effort ambient attachments read their context from.
+    #[cfg(feature = "turns")]
+    pub(super) ambient: Arc<super::turns::ambient::Base>,
     /// Serializes ticket assignment through enqueue, without holding the state lock.
     pub(super) queueing: Mutex<()>,
     // Dropped after the terminal; never run filesystem cleanup under controller locks.
@@ -265,6 +269,8 @@ impl AgentTerminal {
             plan,
             #[cfg(feature = "turns")]
             None,
+            #[cfg(feature = "turns")]
+            None,
         )
     }
 
@@ -309,12 +315,14 @@ impl AgentTerminal {
             shell,
             plan,
             Some(Observation::Claude(exclusive)),
+            None,
         )
     }
 
     /// Attaches at the verified EOF of the current session of a controlled Claude PTY.
     /// This starts a dedicated worker and performs no filesystem I/O on the caller.
-    /// Poll [super::turns::TurnReceiver::status] for the baseline or a typed gap.
+    /// Wait for the baseline or a typed gap with
+    /// [super::turns::TurnReceiver::wait_status_change], or read its status.
     /// A new prompt and an explicit end marker are required for a reply.
     ///
     /// Ordinary spawns, ended launches and unsupported platforms return
@@ -370,6 +378,7 @@ impl AgentTerminal {
             shell,
             plan,
             Some(Observation::Other(source, root)),
+            None,
         )
     }
 
@@ -391,6 +400,164 @@ impl AgentTerminal {
             let _ = options;
             Err(super::turns::AttachError::NoLaunch)
         }
+    }
+
+    /// Starts best-effort ("ambient") turn observation with the profile's
+    /// [`ambient_turns`](AgentProfile::ambient_turns) source. Works for every terminal —
+    /// shell or direct spawn, any platform, no lease, no isolated root, no pinned CLI
+    /// version — because it verifies nothing: it provides **no writer exclusion and no
+    /// attribution guarantee**, so another process of the same user can write a transcript
+    /// the source locates. Use its replies for convenience relaying, never for
+    /// authorisation. See [`turns::ambient`](super::turns::ambient).
+    ///
+    /// A profile with no transcript source but an
+    /// [`ambient_feed`](AgentProfile::ambient_feed) (OpenCode) is followed through that feed
+    /// instead, which reads the agent's own server when the terminal was spawned with
+    /// [`spawn_with_ambient_feed`](Self::spawn_with_ambient_feed).
+    ///
+    /// Validates `options` and starts one worker thread; performs no file or network I/O
+    /// on the caller. Errors: [`NoAmbientSource`](super::turns::AttachError::NoAmbientSource)
+    /// without a profile source or feed, [`InvalidLimits`](super::turns::AttachError::InvalidLimits),
+    /// [`NoLaunch`](super::turns::AttachError::NoLaunch) once the PTY records child exit, the
+    /// session ends, the terminal is dropped or its monitor fails, [`Busy`](super::turns::AttachError::Busy)
+    /// at the process-wide
+    /// [`ambient_worker_limit`](super::turns::ambient::ambient_worker_limit), and
+    /// [`Spawn`](super::turns::AttachError::Spawn). Several attachments to one terminal are
+    /// independent.
+    #[cfg(feature = "turns")]
+    pub fn attach_ambient_turns(
+        &self,
+        options: super::turns::ambient::AmbientOptions,
+    ) -> std::result::Result<super::turns::ambient::AmbientReceiver, super::turns::AttachError>
+    {
+        use super::turns::ambient::Source;
+        let profile = self.ctl.cfg.profile.as_ref();
+        let source = profile
+            .and_then(|profile| profile.ambient_turns())
+            .map(Source::Transcript)
+            .or_else(|| profile.and_then(|p| p.ambient_feed()).map(Source::Feed))
+            .ok_or(super::turns::AttachError::NoAmbientSource)?;
+        super::turns::ambient::attach(&self.ctl, &self.ambient, source, options)
+    }
+
+    /// [`attach_ambient_turns`](Self::attach_ambient_turns) with a host-supplied source,
+    /// for a CLI whose profile has none or a custom transcript layout. The same best-effort
+    /// limits apply.
+    #[cfg(feature = "turns")]
+    pub fn attach_ambient_turns_with(
+        &self,
+        source: Arc<dyn super::turns::ambient::AmbientSource>,
+        options: super::turns::ambient::AmbientOptions,
+    ) -> std::result::Result<super::turns::ambient::AmbientReceiver, super::turns::AttachError>
+    {
+        let source = super::turns::ambient::Source::Transcript(source);
+        super::turns::ambient::attach(&self.ctl, &self.ambient, source, options)
+    }
+
+    /// [`attach_ambient_turns`](Self::attach_ambient_turns) with a host-supplied
+    /// [`AmbientFeed`](super::turns::ambient::AmbientFeed): a source the worker polls
+    /// instead of a transcript it tails. Its reader gets the terminal's endpoint when the
+    /// terminal was spawned with [`spawn_with_ambient_feed`](Self::spawn_with_ambient_feed).
+    /// The same best-effort terms, limits and errors apply.
+    #[cfg(feature = "turns")]
+    pub fn attach_ambient_feed_with(
+        &self,
+        feed: Arc<dyn super::turns::ambient::AmbientFeed>,
+        options: super::turns::ambient::AmbientOptions,
+    ) -> std::result::Result<super::turns::ambient::AmbientReceiver, super::turns::AttachError>
+    {
+        let source = super::turns::ambient::Source::Feed(feed);
+        super::turns::ambient::attach(&self.ctl, &self.ambient, source, options)
+    }
+
+    /// Starts `spec` like [`spawn`](Self::spawn), with the agent launched to serve its
+    /// best-effort ambient feed: the profile's
+    /// [`ambient_feed_launch`](AgentProfile::ambient_feed_launch) adds what that needs to the
+    /// launch, and the terminal keeps the endpoint for
+    /// [`attach_ambient_turns`](Self::attach_ambient_turns). For OpenCode that is its TUI's
+    /// HTTP server on a loopback port free at spawn, behind a password made from 16 bytes
+    /// of OS randomness. Ordinary spawns are unchanged; nothing serves without this opt-in.
+    ///
+    /// - **Shell spawn**: the arguments join the launch line, and the variables join the
+    ///   shell's spawn environment, so every launch typed in this terminal uses the same
+    ///   port and password, and **every process the shell starts inherits the password**.
+    ///   Spawn a new terminal for a new port and password.
+    /// - **Direct spawn**: the arguments are appended to the host's argv (which must be
+    ///   UTF-8) and the profile's launch environment is applied; the agent and its
+    ///   children inherit the password. Each direct spawn has its own port and password.
+    ///
+    /// The password is never logged or shown by a `Debug` impl, and the ambient feed sends
+    /// it only on a connection whose server end it found held by the launched agent's
+    /// process (see [`turns::ambient`](super::turns::ambient)). Other processes of the same
+    /// user can read the environment of the shell and its children.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`spawn`](Self::spawn), and [`Error::InvalidInput`](crate::Error::InvalidInput)
+    /// without a profile, for a non-UTF-8 direct argv, for an OpenCode plan that contains
+    /// `--`, enables `--mini`, or already sets `--port` or `--hostname`, or when `spec.env` removes a
+    /// variable the feed launch sets (the server would start without its password);
+    /// [`Error::Unsupported`](crate::Error::Unsupported) when the profile serves no feed;
+    /// [`Error::Io`](crate::Error::Io) when no loopback port or OS randomness is available.
+    /// Not combinable with `spawn_with_tools` (feature `tools`) or the controlled tier's
+    /// spawns.
+    #[cfg(feature = "turns")]
+    pub fn spawn_with_ambient_feed(
+        mut spec: SpawnSpec,
+        agent: AgentSpec,
+    ) -> Result<(AgentTerminal, Receiver<Event>)> {
+        let profile = agent.profile.clone().ok_or_else(|| {
+            crate::Error::InvalidInput("an ambient feed launch requires an agent profile".into())
+        })?;
+        agent.limits.validate()?;
+        let shell = Self::resolve_shell(&mut spec);
+        let mut plan = match (agent.selected_launch(&spec, shell)?, &spec.mode) {
+            (Some(plan), _) => plan,
+            (None, SpawnMode::Direct { program, args }) => {
+                let utf8 = |word: &std::ffi::OsStr| {
+                    word.to_str().map(str::to_owned).ok_or_else(|| {
+                        crate::Error::InvalidInput(
+                            "an ambient feed launch needs a UTF-8 direct argv".into(),
+                        )
+                    })
+                };
+                let mut direct = LaunchPlan::new(utf8(program.as_os_str())?);
+                direct.args = args.iter().map(|arg| utf8(arg)).collect::<Result<_>>()?;
+                // As for an ordinary direct launch: the profile's environment, not its argv.
+                let defaults = profile.launch(&agent.permissions, &agent.trust, &spec.cwd, shell);
+                direct.env = defaults.env;
+                direct.env_defaults = defaults.env_defaults;
+                direct
+            }
+            (None, SpawnMode::Shell(_)) => {
+                profile.launch(&agent.permissions, &agent.trust, &spec.cwd, shell)
+            }
+        };
+        let before = plan.env.clone();
+        let endpoint = profile.ambient_feed_launch(&mut plan)?.ok_or_else(|| {
+            crate::Error::Unsupported(format!("ambient feed launch for {}", profile.id()))
+        })?;
+        // A variable the launch sets that the policy removes would leave the server
+        // without its password (or the agent without its port): refused.
+        let mut merged = spec.env.clone();
+        plan.merge_env_into(&mut merged);
+        if let Some((key, _)) = plan
+            .env
+            .iter()
+            .filter(|entry| !before.contains(entry))
+            .find(|(key, value)| {
+                merged.child_var(std::ffi::OsStr::new(key)).as_deref()
+                    != Some(std::ffi::OsStr::new(value))
+            })
+        {
+            return Err(crate::Error::InvalidInput(format!(
+                "the environment policy removes {key}, which the ambient feed launch sets"
+            )));
+        }
+        if matches!(spec.mode, SpawnMode::Shell(_)) {
+            plan.launch_line(shell, Some(spec.input_limits.max_write_bytes))?;
+        }
+        Self::spawn_prepared(spec, agent, shell, Some(plan), None, Some(endpoint))
     }
 
     /// Starts a PTY agent with consumer-owned CLI/MCP tools scoped to this launch.
@@ -460,6 +627,8 @@ impl AgentTerminal {
             Some(plan),
             #[cfg(feature = "turns")]
             None,
+            #[cfg(feature = "turns")]
+            None,
         )
     }
 
@@ -469,6 +638,7 @@ impl AgentTerminal {
         shell: ShellKind,
         prepared: Option<LaunchPlan>,
         #[cfg(feature = "turns")] exclusive: Option<Observation<'_>>,
+        #[cfg(feature = "turns")] endpoint: Option<super::turns::ambient::AmbientEndpoint>,
     ) -> Result<(AgentTerminal, Receiver<Event>)> {
         spec.screen.enabled = true;
         let direct = matches!(spec.mode, SpawnMode::Direct { .. });
@@ -564,10 +734,21 @@ impl AgentTerminal {
         });
         #[cfg(not(feature = "turns"))]
         let admit = None::<fn() -> Result<()>>;
+        #[cfg(feature = "turns")]
+        let ambient = (
+            std::path::absolute(&spec.cwd).unwrap_or_else(|_| spec.cwd.clone()),
+            spec.env.clone(),
+        );
+        #[cfg(feature = "turns")]
+        let mut spawned_at = None;
         let (term, events, watch) = Terminal::spawn_watched(spec, admit, || {
             #[cfg(all(unix, any(test, feature = "turns")))]
             if let Some(writer) = turn_claim.as_ref().and_then(|claim| claim.writer.as_ref()) {
                 writer.begin_spawn();
+            }
+            #[cfg(feature = "turns")]
+            {
+                spawned_at = Some(std::time::SystemTime::now());
             }
         })?;
         // Wake notifications coalesce; the monitor always reads the current state.
@@ -609,11 +790,22 @@ impl AgentTerminal {
             // The agent is told from a program the user starts by the lines they submit.
             ctl.term().count_shell_lines();
         }
+        #[cfg(feature = "turns")]
+        let ambient = Arc::new(super::turns::ambient::Base {
+            cwd: ambient.0,
+            env: ambient.1,
+            direct,
+            child: term.pid(),
+            spawned_at: spawned_at.expect("successful spawn ran its pre-spawn hook"),
+            endpoint,
+        });
         let agent_term = AgentTerminal {
             term,
             ctl,
             #[cfg(all(unix, any(test, feature = "turns")))]
             turns,
+            #[cfg(feature = "turns")]
+            ambient,
             queueing: Mutex::new(()),
             #[cfg(feature = "tools")]
             _tools: tool_attachment,
@@ -698,7 +890,14 @@ impl AgentTerminal {
     /// [`AbortReason::SubmitUnverified`](super::AbortReason::SubmitUnverified), possibly
     /// before Enter. Retries are disabled by default; opting into them can submit twice
     /// if the agent accepts input before redrawing its composer. An unverified outcome
-    /// must not be automatically resent. An exact reset command gets the longer reset
+    /// must not be automatically resent. If the host relaunches before the agent paste
+    /// is queued, delivery repeats its readiness, foreground and commit-point checks.
+    /// After the paste, shell cleanup checks the launch before queueing Ctrl-C and
+    /// before marking the agent gone. Only the explicit opt-in
+    /// [`SendOptions::unreadable_composer`] lets a composer the profile cannot read get
+    /// one Enter without composer evidence, ending
+    /// [`AbortReason::UnverifiedEnter`](super::AbortReason::UnverifiedEnter) — never
+    /// `Delivered`. An exact reset command gets the longer reset
     /// verification window and at most one Enter. Only [`reset`](Self::reset) and
     /// [`reset_and_send`](Self::reset_and_send) check the agent's response for refusal.
     ///
@@ -804,12 +1003,44 @@ impl AgentTerminal {
     /// [`AbortReason::ResetRejected`]. An ambiguous notice or an unavailable check yields
     /// [`AbortReason::SubmitUnverified`], including after Enter. A notice that scrolls
     /// away between observations can be missed. `Delivered` verifies submission only.
+    ///
+    /// **Turn gate** (opt-in, [`Timing::reset_turn_wait`]; off by default): once the agent
+    /// is ready, the reset waits while its [`activity`](Self::activity) is
+    /// [`Activity::Working`] — at most that long in total — and is then typed as above.
+    /// Still working at the end ⇒ [`AbortReason::AgentWorking`], nothing typed. While it
+    /// waits the foreground is read every 250 ms: the shell in front means the agent left
+    /// (it is relaunched, as for any delivery), another program gives
+    /// [`AbortReason::ForegroundUnproven`], a recognized question
+    /// [`AbortReason::DialogBlocking`]. Teardown and the session's end stop the wait at
+    /// once; [`interrupt`](Self::interrupt) is not held by it. The job keeps its queue slot
+    /// and admission meanwhile, and later deliveries wait behind it. Activity is a
+    /// heuristic, so the gate makes a reset typed into a running turn less likely without
+    /// proving the turn ended; the refusal check above still applies. An agent that never
+    /// signals `Working` is never held.
+    ///
+    /// A composer the profile cannot read gets no Enter; see
+    /// [`reset_with`](Self::reset_with).
     pub fn reset(&self) -> Ticket {
+        self.reset_with(UnreadableComposer::Refuse)
+    }
+
+    /// [`reset`](Self::reset), choosing what happens when the profile cannot read its
+    /// composer. [`UnreadableComposer::Refuse`] is `reset()`.
+    /// [`UnreadableComposer::EnterOnce`] writes the reset command's Enter once without
+    /// composer evidence (see there for the conditions), still checks for a refusal while
+    /// fresh output settles, and ends [`AbortReason::UnverifiedEnter`]. Nothing confirms
+    /// that a new conversation started: a host should treat the conversation as unknown.
+    pub fn reset_with(&self, unreadable_composer: UnreadableComposer) -> Ticket {
         let Some(command) = self.ctl.cfg.reset_command else {
             return self.refuse(AbortReason::Unsupported);
         };
         self.queue(command.len(), command.len(), |ticket, resolver| {
-            let job = MessageJob::reset(ticket, command, ShellFallback::PasteInert);
+            let job = MessageJob::reset(
+                ticket,
+                command,
+                ShellFallback::PasteInert,
+                unreadable_composer,
+            );
             let launch = job.refusal().is_none();
             (Job::Message { job, resolver }, launch)
         })
@@ -817,9 +1048,12 @@ impl AgentTerminal {
 
     /// A reset, then `text`, as **one** delivery (one ticket and one [`Event::Delivery`]).
     /// 1. The reset follows [`reset`](Self::reset) with [`ShellFallback::Fail`] and no
-    ///    strict proof. A failed reset ends the delivery before the message is pasted.
+    ///    strict proof, including its opt-in turn gate ([`Timing::reset_turn_wait`]).
+    ///    A failed reset ends the delivery before the message is pasted.
     /// 2. After submission, the reset checks its response across the fresh-output settle.
     ///    The follow-up checks again at its commit point, after any host revalidation.
+    ///    A relaunch between that check and the paste withholds the message and reports
+    ///    [`AbortReason::SubmitUnverified`].
     /// 3. The follow-up submits `text` with `Fail` on the shell and the caller's
     ///    `strict` and `revalidate` settings. Only the follow-up carries revalidation.
     ///
@@ -829,10 +1063,20 @@ impl AgentTerminal {
     /// [`AbortReason::Unsupported`](super::AbortReason::Unsupported) without a reset
     /// command and [`AbortReason::EmptyText`](super::AbortReason::EmptyText) for a text with
     /// nothing to paste — in its turn, nothing typed (no reset either), no launch.
+    ///
+    /// `opts.unreadable_composer` applies to both halves. With
+    /// [`UnreadableComposer::EnterOnce`] a reset that wrote its Enter without composer
+    /// evidence permits the follow-up only once fresh output after that Enter settled;
+    /// otherwise the follow-up is not pasted and the ticket reports
+    /// [`AbortReason::SubmitUnverified`]. When the follow-up runs the ticket reports at
+    /// best [`AbortReason::UnverifiedEnter`], never `Delivered`. **Risk:** nothing proves
+    /// that the reset took effect, so the follow-up may land in the old conversation, or
+    /// in the composer of a CLI still busy with the reset; it is never resent.
     pub fn reset_and_send(&self, text: &str, opts: SendOptions) -> Ticket {
         let Some(command) = self.ctl.cfg.reset_command else {
             return self.refuse(AbortReason::Unsupported);
         };
+        let unreadable_composer = opts.unreadable_composer;
         self.queue(
             text.len().saturating_add(command.len()),
             text.len().max(command.len()),
@@ -845,6 +1089,7 @@ impl AgentTerminal {
                         strict: opts.strict,
                         on_shell: ShellFallback::Fail,
                         revalidate: opts.revalidate,
+                        unreadable_composer,
                     },
                 );
                 if message.refusal().is_some() {
@@ -856,7 +1101,8 @@ impl AgentTerminal {
                         false,
                     );
                 }
-                let reset = MessageJob::reset(ticket, command, ShellFallback::Fail);
+                let reset =
+                    MessageJob::reset(ticket, command, ShellFallback::Fail, unreadable_composer);
                 let launch = reset.refusal().is_none();
                 (
                     Job::ResetAndSend {
@@ -1083,6 +1329,15 @@ mod limit_tests {
                 term,
                 ctl,
                 turns: None,
+                #[cfg(feature = "turns")]
+                ambient: Arc::new(crate::agent::turns::ambient::Base {
+                    cwd: std::env::temp_dir(),
+                    env: crate::env::EnvPolicy::default(),
+                    direct: false,
+                    child: None,
+                    spawned_at: std::time::SystemTime::now(),
+                    endpoint: None,
+                }),
                 queueing: Mutex::new(()),
                 #[cfg(feature = "tools")]
                 _tools: None,

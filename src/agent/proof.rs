@@ -61,9 +61,14 @@ pub(crate) fn strict_owner(
 impl Runner {
     /// A strict proof at `point` on a fresh read of the foreground ([`Runner::owner`]:
     /// cancellation is checked before and after it).
-    pub(crate) fn strict_check(&self, ticket: TicketId, point: &str) -> Step<()> {
-        let (_, front, agent) = self.owner(ticket)?;
-        self.strict_verdict(ticket, point, &front, agent)
+    pub(crate) fn strict_check(
+        &self,
+        ticket: TicketId,
+        point: &str,
+        lifecycle: Option<u64>,
+    ) -> Step<()> {
+        let (_, front, agent) = self.owner(ticket, lifecycle)?;
+        self.strict_verdict(ticket, point, &front, agent, lifecycle)
     }
 
     /// [`strict_owner`] on a read already made; a failure is traced, and the shell in front
@@ -74,6 +79,7 @@ impl Runner {
         point: &str,
         front: &FrontRead,
         agent: AgentProgram,
+        lifecycle: Option<u64>,
     ) -> Step<()> {
         let verdict = strict_owner(front, self.ctl.cfg.foreground_policy, agent);
         if let Err(reason) = verdict {
@@ -85,7 +91,11 @@ impl Runner {
                 front.fg.confidence
             );
             if reason == AbortReason::ShellOnly {
-                self.ctl.update(|st, _| st.agent_left());
+                self.ctl.update(|st, _| {
+                    st.check_delivery_lifecycle(lifecycle)?;
+                    st.agent_left();
+                    Ok(())
+                })?;
             }
         }
         verdict

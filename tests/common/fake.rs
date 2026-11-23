@@ -52,6 +52,10 @@ pub struct FakeProfile {
     args: Vec<String>,
     #[cfg(feature = "questions")]
     question_reads: Option<crossbeam_channel::Sender<()>>,
+    /// The question read off the screen offers a typed answer (as Claude's single-choice
+    /// questions do).
+    #[cfg(feature = "questions")]
+    question_free_text: bool,
 }
 
 impl FakeProfile {
@@ -70,12 +74,21 @@ impl FakeProfile {
             args,
             #[cfg(feature = "questions")]
             question_reads: None,
+            #[cfg(feature = "questions")]
+            question_free_text: false,
         }
     }
 
     #[cfg(feature = "questions")]
     pub fn with_question_reads(mut self, signal: crossbeam_channel::Sender<()>) -> Self {
         self.question_reads = Some(signal);
+        self
+    }
+
+    /// The question read off the screen offers a typed answer.
+    #[cfg(feature = "questions")]
+    pub fn with_question_free_text(mut self) -> Self {
+        self.question_free_text = true;
         self
     }
 
@@ -110,6 +123,8 @@ pub fn unlaunchable_profile() -> Arc<dyn AgentProfile> {
         args: Vec::new(),
         #[cfg(feature = "questions")]
         question_reads: None,
+        #[cfg(feature = "questions")]
+        question_free_text: false,
     })
 }
 
@@ -170,11 +185,10 @@ impl AgentProfile for FakeProfile {
         screen.contains("1. Continue").then(|| {
             PendingQuestion::new(
                 "",
-                vec![QuestionItem::new(
-                    "Fake",
-                    "Continue the fixture?",
-                    vec!["Continue".into()],
-                )],
+                vec![
+                    QuestionItem::new("Fake", "Continue the fixture?", vec!["Continue".into()])
+                        .with_free_text(self.question_free_text),
+                ],
             )
         })
     }

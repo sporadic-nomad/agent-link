@@ -154,6 +154,17 @@ impl AgentProfile for CodexProfile {
     fn mcp_backend(&self, _: crate::tools::ToolTransport) -> Option<crate::tools::McpBackend> {
         Some(crate::tools::McpBackend::Codex)
     }
+    /// The newest interactive rollout of the project under `CODEX_HOME` (else
+    /// `~/.codex`); turns end explicitly with `task_complete` or `turn_aborted`. Best
+    /// effort, see [`turns::ambient`](crate::agent::turns::ambient).
+    #[cfg(feature = "turns")]
+    fn ambient_turns(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::agent::turns::ambient::AmbientSource>> {
+        Some(std::sync::Arc::new(
+            super::ambient::codex::CodexAmbient::default(),
+        ))
+    }
     fn compatibility(&self) -> crate::agent::compatibility::Compatibility {
         use crate::agent::compatibility::{Compatibility, Evidence, EvidenceKind, Support};
         Compatibility {
@@ -224,6 +235,29 @@ impl AgentProfile for CodexProfile {
                     cli_version: Some("0.170.0"),
                     ..super::MODEL_ARGV_EVIDENCE
                 },
+                #[cfg(feature = "turns")]
+                Evidence {
+                    cli_version: Some("0.154.0"),
+                    source: "tests/fixtures/transcripts/ambient/codex-0.154.0/README.md",
+                    ..super::AMBIENT_PARSING
+                },
+                #[cfg(feature = "turns")]
+                Evidence {
+                    cli_version: Some("0.154.0"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/transcripts/codex-0.154.0/README.md",
+                    ..super::AMBIENT_PARSING
+                },
+                #[cfg(feature = "turns")]
+                super::AMBIENT_LOOKUP,
+                #[cfg(feature = "questions")]
+                Evidence {
+                    cli_version: Some("0.154.0"),
+                    source: "tests/fixtures/transcripts/ambient/codex-0.154.0/README.md",
+                    ..super::AMBIENT_QUESTION_RECORDS
+                },
+                #[cfg(feature = "questions")]
+                super::AMBIENT_QUESTION_RELAY,
             ],
         }
     }

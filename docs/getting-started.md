@@ -144,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-> **Note on verified delivery:** `claude`, `codex`, and `pi` include measured composer verification. `opencode` and `cursor` layouts are not sufficiently measured for verified submits and return `DeliveryOutcome::Aborted(AbortReason::SubmitUnverified)`. Cursor support is **work in progress**; authenticated `--force` startup/composer behavior is also unverified.
+> **Note on verified delivery:** `claude`, `codex`, and `pi` include measured composer verification. `opencode` and `cursor` layouts are not sufficiently measured for verified submits and return `DeliveryOutcome::Aborted(AbortReason::SubmitUnverified)`. A host that accepts unverified submission can set `SendOptions::unreadable_composer` to `UnreadableComposer::EnterOnce`. Delivery then writes one Enter without composer evidence and returns `Aborted(AbortReason::UnverifiedEnter)`, never `Delivered`. Cursor support is **work in progress**; authenticated `--force` startup/composer behavior is also unverified.
 
 ---
 

@@ -9,7 +9,7 @@ python3 scripts/check.py --skip-tests
 ```
 
 The static checks run formatting, feature checks (including isolated `claude`,
-`claude,tokio`, and `tools` with each native adapter), Clippy and rustdoc. Tests use real
+`claude,tokio`, and `tools` with each native adapter), Clippy, default-feature and `turns`-only core rustdoc and all-feature workspace rustdoc. Tests use real
 local shells and a scripted agent; no account credentials or live API calls are needed.
 The `test-support` feature enables that helper executable and the integration tests
 that use it. Applications should leave it disabled.
@@ -55,6 +55,47 @@ cargo test --locked --no-default-features --features questions,test-support --te
 cargo test --locked --no-default-features --features turns --lib agent::profiles::turns::claude -- --test-threads=1
 cargo test --locked --no-default-features --features turns --lib agent::turns:: -- --test-threads=1
 cargo test --locked --no-default-features --features turns --test claude_turns --test isolated_turns --test compatibility -- --test-threads=1
+```
+
+The best-effort ambient tier is covered offline by its unit tests and a fake-agent PTY
+target with synthetic transcripts in temporary directories:
+
+```sh
+cargo test --locked --no-default-features --features turns --lib agent::turns::ambient -- --test-threads=1
+cargo test --locked --no-default-features --features turns,test-support --test ambient_turns -- --test-threads=1
+```
+
+The built-in Claude, Codex, Pi and Cursor ambient sources replay recorded transcripts
+and run their lookups on temporary configuration roots; the `ambient_sources` target
+follows them on fake-agent PTYs:
+
+```sh
+cargo test --locked --no-default-features --features turns --lib agent::profiles::ambient -- --test-threads=1
+cargo test --locked --no-default-features --features turns,test-support --test ambient_sources --test compatibility -- --test-threads=1
+```
+
+The ambient OpenCode feed, the shared loopback HTTP client and its server-owner check
+are covered offline by unit tests against a std-only stub server
+(`tests/common/http_stub.rs`) and by a PTY target in which the fake agent serves a
+synthetic OpenCode-like API from the launched process. No OpenCode binary is used; the
+owner check's runtime results are native macOS only.
+
+```sh
+cargo test --locked --no-default-features --features turns --lib agent::loopback -- --test-threads=1
+cargo test --locked --no-default-features --features turns --lib agent::profiles::ambient -- --test-threads=1
+cargo test --locked --no-default-features --features turns,test-support --test ambient_feed -- --test-threads=1
+```
+
+Best-effort ambient questions are covered offline by the question hooks' unit tests
+(recorded Claude and Codex transcripts), the worker's question rules on a synthetic
+format, the OpenCode TUI question feed against the stub server, and a PTY target in
+which the fake agent's question dialog is corroborated against temporary transcripts:
+
+```sh
+cargo test --locked --no-default-features --features questions --lib agent::turns::ambient::question -- --test-threads=1
+cargo test --locked --no-default-features --features questions --lib agent::profiles::ambient -- --test-threads=1
+cargo test --locked --no-default-features --features questions --lib agent::questions::opencode -- --test-threads=1
+cargo test --locked --no-default-features --features questions,test-support --test ambient_questions --test pty_questions -- --test-threads=1
 ```
 
 Add a regression test for a behavioral fix, update public API documentation, and

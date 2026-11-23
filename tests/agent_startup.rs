@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use agent_link::agent::{
     Activity, AgentProfile, AgentSpec, AgentState, AgentTerminal, DeliveryOutcome, Dialog,
-    LaunchPlan, ModelChoice, Permissions, ShellKind, Timing, TrustPolicy,
+    LaunchPlan, ModelChoice, Permissions, ProfileRegistry, ShellKind, Timing, TrustPolicy,
 };
 use agent_link::shell::ShellSpec;
 use agent_link::{Error, Event, ForegroundOwner, PtySize, SpawnMode, SpawnSpec};
@@ -408,6 +408,20 @@ fn rejected_model_requests_leave_the_child_start_marker_absent() {
         refused(shell.clone(), agent.clone()),
         Error::Unsupported(_)
     ));
+    // OpenCode's TUI has no effort option and Cursor has no model mapping.
+    for (id, choice) in [
+        ("opencode", ModelChoice::new("selected").with_effort("high")),
+        ("cursor", ModelChoice::new("selected")),
+    ] {
+        let builtin = AgentSpec {
+            model: Some(choice),
+            ..AgentSpec::new(ProfileRegistry::builtin().get(id).unwrap())
+        };
+        assert!(
+            matches!(refused(shell.clone(), builtin), Error::Unsupported(_)),
+            "{id}"
+        );
+    }
     agent.profile = Some(Arc::new(ModelPeer::default()));
     agent.model = Some(ModelChoice::new("selected").with_effort("bad\nlevel"));
     assert!(matches!(
@@ -431,6 +445,38 @@ fn rejected_model_requests_leave_the_child_start_marker_absent() {
         refused(shell, agent),
         Error::InputTooLarge { limit: 1, .. }
     ));
+}
+
+/// The built-in OpenCode profile types its model words after the default posture, whose
+/// permission env default still reaches the agent. The stand-in named `opencode` is
+/// found on a PATH without the host's directories, so an installed CLI never runs.
+#[test]
+fn an_opencode_model_launch_keeps_the_permission_env_default() {
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    write_script(
+        &bin,
+        "opencode",
+        "printf '%s\\n' \"$OPENCODE_PERMISSION\" \"$@\" > argv.tmp && mv argv.tmp received-argv",
+    );
+    let mut path = bin.into_os_string();
+    path.push(":/usr/bin:/bin");
+    let mut spec = common::sh_spec(home.path());
+    spec.env.set("PATH", path);
+    let model = "provider/model [1m]";
+    let agent = AgentSpec {
+        model: Some(ModelChoice::new(model)),
+        ..AgentSpec::new(ProfileRegistry::builtin().get("opencode").unwrap())
+    };
+    let (term, _events) = start_agent_shell_spec(spec, agent);
+    term.launch().unwrap();
+    let report = home.path().join("received-argv");
+    wait_until("the stand-in recorded its argv", || report.exists());
+    assert_eq!(
+        fs::read_to_string(report).unwrap(),
+        format!("{{\"*\":\"allow\"}}\n-m\n{model}\n")
+    );
 }
 
 /// No profile: only session events — not for a spinner title or progress, not at the exit.

@@ -55,7 +55,9 @@ fn trust_pointer() -> &'static Regex {
 /// remains unverified. Pending input uses the default rule: cursor's composer marker is `→`,
 /// which that rule does not read, so it reads `None` (unreadable) — not measured with a
 /// paste. Verified delivery therefore refuses submission with `SubmitUnverified`
-/// when no readable composer evidence is available.
+/// when no readable composer evidence is available, unless the send opts into one
+/// unverified Enter ([`UnreadableComposer::EnterOnce`](crate::agent::UnreadableComposer::EnterOnce),
+/// not measured against cursor).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CursorProfile;
 
@@ -63,7 +65,40 @@ fn dialog_visible(text: &str) -> bool {
     has_all(text, &[TRUST_HEADER, TRUST_YES])
 }
 
+impl CursorProfile {
+    /// cursor's best-effort ambient source that also reports its **unseparated** reply
+    /// text: the text blocks after the turn's last tool call, joined by a blank line,
+    /// exactly as cursor wrote them. cursor joins a message's reasoning into its text block
+    /// with no marker, so this text can mix model reasoning with the displayed answer;
+    /// treat it accordingly. Pass it to
+    /// [`AgentTerminal::attach_ambient_turns_with`](crate::agent::AgentTerminal::attach_ambient_turns_with).
+    /// The profile's own [`ambient_turns`](AgentProfile::ambient_turns) reports completion
+    /// only (every `reply` is `None`), as the controlled tier's `TranscriptSource::Cursor`
+    /// does; this is the ambient counterpart of `CursorWithUnseparatedText`. Best effort,
+    /// see [`turns::ambient`](crate::agent::turns::ambient).
+    #[cfg(feature = "turns")]
+    pub fn ambient_turns_with_unseparated_text(
+        &self,
+    ) -> std::sync::Arc<dyn crate::agent::turns::ambient::AmbientSource> {
+        std::sync::Arc::new(super::ambient::cursor::CursorAmbient { text: true })
+    }
+}
+
 impl AgentProfile for CursorProfile {
+    /// The project's conversation created since the launch and written last under
+    /// `CURSOR_DATA_DIR` (else `~/.cursor`); a successful `turn_ended` ends a turn
+    /// explicitly, the next prompt one whose end a rewrite dropped. Completion only: every
+    /// `reply` is `None` (opt in with
+    /// [`ambient_turns_with_unseparated_text`](CursorProfile::ambient_turns_with_unseparated_text)).
+    /// Best effort, see [`turns::ambient`](crate::agent::turns::ambient).
+    #[cfg(feature = "turns")]
+    fn ambient_turns(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::agent::turns::ambient::AmbientSource>> {
+        Some(std::sync::Arc::new(super::ambient::cursor::CursorAmbient {
+            text: false,
+        }))
+    }
     fn compatibility(&self) -> crate::agent::compatibility::Compatibility {
         use crate::agent::compatibility::{Compatibility, Evidence, EvidenceKind, Support};
         Compatibility {
@@ -101,6 +136,24 @@ impl AgentProfile for CursorProfile {
                     platform: Some("macos-aarch64"),
                     source: "tests/fixtures/cursor-2026.11.13-shell-approval-renderer.bin",
                 },
+                #[cfg(feature = "turns")]
+                Evidence {
+                    cli_version: Some("2026.10.01"),
+                    source: "tests/fixtures/transcripts/ambient/cursor-2026.10.01/README.md",
+                    ..super::AMBIENT_PARSING
+                },
+                // The packaged writer's own images (fabricated inputs), as the controlled
+                // tier records them.
+                #[cfg(feature = "turns")]
+                Evidence {
+                    kind: EvidenceKind::LiveCheck,
+                    cli_version: Some("2026.11.13-eacade1"),
+                    platform: Some("macos-aarch64"),
+                    source: "tests/fixtures/transcripts/cursor-2026.11.13-eacade1/README.md",
+                    ..super::AMBIENT_PARSING
+                },
+                #[cfg(feature = "turns")]
+                super::AMBIENT_LOOKUP,
             ],
         }
     }

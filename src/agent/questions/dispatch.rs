@@ -204,14 +204,8 @@ impl Runner {
         match &job.source {
             Source::Screen => Ok(()),
             #[cfg(unix)]
-            Source::Transcript(reader) => {
-                let current = reader.pending_question()?.ok_or(AnswerError::NotOpen)?;
-                if current == job.pending {
-                    Ok(())
-                } else {
-                    Err(AnswerError::Changed)
-                }
-            }
+            Source::Transcript(_) => self.answer_transcript(job),
+            Source::Ambient(_) => self.answer_transcript(job),
             Source::Feed(feed) => {
                 let current =
                     Source::feed_question(&**feed, Some(&job.pending), &Default::default())?
@@ -222,6 +216,20 @@ impl Runner {
                     Err(AnswerError::Changed)
                 }
             }
+        }
+    }
+
+    /// A transcript source still shows exactly this question asked.
+    fn answer_transcript(&self, job: &AnswerJob) -> Result<(), AnswerError> {
+        let current = job
+            .source
+            .transcript_question()
+            .ok_or(AnswerError::NotOpen)??
+            .ok_or(AnswerError::NotOpen)?;
+        if current == job.pending {
+            Ok(())
+        } else {
+            Err(AnswerError::Changed)
         }
     }
 
